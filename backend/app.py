@@ -7,7 +7,11 @@ import os
 load_dotenv()
 
 app = Flask(__name__)
-CORS(app)  # Enable CORS for React frontend
+
+# CORS configuration - allow all origins in development, restrict in production
+# Update origins list with your frontend URL when deploying
+allowed_origins = os.getenv('CORS_ORIGINS', '*').split(',')
+CORS(app, origins=allowed_origins if allowed_origins != ['*'] else ['*'])
 
 # Configuration
 app.config['SECRET_KEY'] = os.getenv('SECRET_KEY', 'dev-secret-key-change-in-production')
