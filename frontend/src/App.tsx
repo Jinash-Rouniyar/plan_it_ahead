@@ -6,6 +6,7 @@ import { Home } from './pages/Home';
 import { Login } from './pages/Login';
 import { Register } from './pages/Register';
 import { Search } from './pages/Search';
+import { CreateItinerary } from './pages/CreateItinerary';
 import { ItineraryBuilder } from './pages/ItineraryBuilder';
 import { AIItinerary } from './pages/AIItinerary';
 import { Companions } from './pages/Companions';
@@ -27,6 +28,14 @@ function App() {
               element={
                 <ProtectedRoute>
                   <Search />
+                </ProtectedRoute>
+              }
+            />
+            <Route
+              path="/itineraries/create"
+              element={
+                <ProtectedRoute>
+                  <CreateItinerary />
                 </ProtectedRoute>
               }
             />

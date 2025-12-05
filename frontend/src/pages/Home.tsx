@@ -16,7 +16,7 @@ export function Home() {
           
           {user ? (
             <div className="flex gap-4 justify-center">
-              <Link to="/search">
+              <Link to="/itineraries/create">
                 <Button size="lg">Start Planning</Button>
               </Link>
               <Link to="/ai">

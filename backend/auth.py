@@ -9,6 +9,15 @@ bp = Blueprint('auth', __name__, url_prefix='/api/auth')
 
 def init_jwt(app):
     jwt = JWTManager(app)
+    
+    @jwt.user_identity_loader
+    def user_identity_lookup(user_id):
+        return str(user_id) if user_id else None
+    
+    @jwt.user_lookup_loader
+    def user_lookup_callback(_jwt_header, jwt_payload):
+        return jwt_payload.get('sub')
+    
     return jwt
 
 
@@ -54,8 +63,9 @@ def register():
             return jsonify({'msg': 'failed to create user'}), 500
 
         user_dict = dict(created._mapping)
+        user_id = user_dict['user_id']
         access_token = create_access_token(
-            {'user_id': user_dict['user_id']}, 
+            identity=user_id,
             expires_delta=timedelta(days=7)
         )
         return jsonify({'user': user_dict, 'access_token': access_token}), 201
@@ -85,16 +95,21 @@ def login():
             return jsonify({'msg': 'invalid credentials'}), 401
 
         user_dict = dict(row._mapping)
-        access_token = create_access_token({'user_id': user_dict['user_id']})
+        user_id = user_dict['user_id']
+        access_token = create_access_token(identity=user_id)
         return jsonify({'user': user_dict, 'access_token': access_token}), 200
 
 
 @bp.route('/me', methods=['GET'])
 @jwt_required()
 def me():
-    identity = get_jwt_identity() or {}
-    user_id = identity.get('user_id')
+    user_id = get_jwt_identity()
     if not user_id:
+        return jsonify({'msg': 'invalid token'}), 401
+    
+    try:
+        user_id = int(user_id)
+    except (ValueError, TypeError):
         return jsonify({'msg': 'invalid token'}), 401
 
     ref = get_reflector()

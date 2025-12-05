@@ -10,9 +10,12 @@ bp = Blueprint('ai', __name__, url_prefix='/api/ai')
 @bp.route('/generate-itinerary', methods=['POST'])
 @jwt_required()
 def generate_itinerary_endpoint():
-    identity = get_jwt_identity() or {}
-    user_id = identity.get('user_id')
+    user_id = get_jwt_identity()
     if not user_id:
+        return jsonify({'msg': 'invalid token'}), 401
+    try:
+        user_id = int(user_id)
+    except (ValueError, TypeError):
         return jsonify({'msg': 'invalid token'}), 401
 
     data = request.get_json() or {}
@@ -55,9 +58,12 @@ def generate_itinerary_endpoint():
 @bp.route('/recommend-attractions', methods=['POST'])
 @jwt_required()
 def recommend_attractions_endpoint():
-    identity = get_jwt_identity() or {}
-    user_id = identity.get('user_id')
+    user_id = get_jwt_identity()
     if not user_id:
+        return jsonify({'msg': 'invalid token'}), 401
+    try:
+        user_id = int(user_id)
+    except (ValueError, TypeError):
         return jsonify({'msg': 'invalid token'}), 401
 
     data = request.get_json() or {}

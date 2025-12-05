@@ -1,11 +1,14 @@
-"""
-Search endpoints for destinations, attractions, hotels, and flights
-"""
 from flask import Blueprint, request, jsonify
 from flask_jwt_extended import jwt_required, get_jwt_identity
 from services.opentripmap import search_pois, get_poi_details, get_nearby_pois
 from services.xotelo import search_hotels, get_hotel_details, get_pricing, get_hotel_heatmap
-from services.amadeus import search_flights, get_flight_details, get_flight_status
+from services.serpapi_flights import search_flights, get_flight_details
+from services.airport_search import search_airports
+from services.amadeus import (
+    get_flight_status,
+    search_flight_destinations, search_cheapest_dates, get_recommended_locations,
+    get_seatmap, price_flight_offer, search_activities, get_most_traveled_destinations
+)
 from services.wikivoyage import get_destination_guide, get_travel_tips, search_destinations
 
 bp = Blueprint('search', __name__, url_prefix='/api/search')
@@ -14,19 +17,12 @@ bp = Blueprint('search', __name__, url_prefix='/api/search')
 @bp.route('/destinations', methods=['GET'])
 @jwt_required(optional=True)
 def search_destinations():
-    """
-    Search for destinations (countries/cities)
-    Uses OpenTripMap geocoding to find locations
-    """
     query = request.args.get('query', '').strip()
     
     if not query:
         return jsonify({'msg': 'query parameter required'}), 400
     
     try:
-        # Use OpenTripMap to search for locations
-        # This is a simplified implementation - in production, you might want
-        # a dedicated geocoding service or database of destinations
         from services.opentripmap import OPENTRIPMAP_BASE_URL, OPENTRIPMAP_API_KEY
         import requests
         
@@ -64,10 +60,6 @@ def search_destinations():
 @bp.route('/attractions', methods=['GET'])
 @jwt_required(optional=True)
 def search_attractions():
-    """
-    Search for attractions/POIs
-    Query params: location, category, radius, limit, lat, lon
-    """
     location = request.args.get('location', '').strip()
     category = request.args.get('category')
     radius = request.args.get('radius', 5000, type=int)
@@ -77,15 +69,11 @@ def search_attractions():
     
     try:
         if lat and lon:
-            # Search by coordinates
             pois = get_nearby_pois(lat, lon, radius, category, limit)
         elif location:
-            # Search by location name
             pois = search_pois(location, category, radius, limit)
         else:
             return jsonify({'msg': 'location or lat/lon required'}), 400
-        
-        # Format response
         formatted_pois = []
         for poi in pois:
             if isinstance(poi, dict):
@@ -106,6 +94,13 @@ def search_attractions():
                 }
                 formatted_pois.append(formatted_poi)
         
+        if not formatted_pois:
+            return jsonify({
+                'attractions': [],
+                'count': 0,
+                'msg': 'No attractions found. Try a different location or increase the search radius.'
+            }), 200
+        
         return jsonify({
             'attractions': formatted_pois,
             'count': len(formatted_pois)
@@ -119,13 +114,11 @@ def search_attractions():
 @bp.route('/attractions/<xid>', methods=['GET'])
 @jwt_required(optional=True)
 def get_attraction_details(xid):
-    """Get detailed information about a specific attraction"""
     try:
         details = get_poi_details(xid)
         if not details:
             return jsonify({'msg': 'Attraction not found'}), 404
         
-        # Format response
         formatted = {
             'xid': details.get('xid'),
             'name': details.get('name', 'Unknown'),
@@ -150,10 +143,6 @@ def get_attraction_details(xid):
 @bp.route('/hotels', methods=['GET'])
 @jwt_required(optional=True)
 def search_hotels_endpoint():
-    """
-    Search for hotels/accommodations
-    Query params: location, check_in, check_out, guests, min_price, max_price, limit
-    """
     location = request.args.get('location', '').strip()
     check_in = request.args.get('check_in', '').strip()
     check_out = request.args.get('check_out', '').strip()
@@ -170,6 +159,13 @@ def search_hotels_endpoint():
     try:
         hotels = search_hotels(location, check_in, check_out, guests, min_price, max_price, limit)
         
+        if not hotels:
+            return jsonify({
+                'hotels': [],
+                'count': 0,
+                'msg': 'No hotels found. Try adjusting your search criteria.'
+            }), 200
+        
         return jsonify({
             'hotels': hotels,
             'count': len(hotels)
@@ -183,7 +179,6 @@ def search_hotels_endpoint():
 @bp.route('/hotels/<hotel_id>', methods=['GET'])
 @jwt_required(optional=True)
 def get_hotel_details_endpoint(hotel_id):
-    """Get detailed information about a specific hotel"""
     try:
         details = get_hotel_details(hotel_id)
         if not details:
@@ -196,19 +191,21 @@ def get_hotel_details_endpoint(hotel_id):
         return jsonify({'msg': 'Error fetching hotel details', 'error': str(e)}), 500
 
 
-@bp.route('/hotels/<hotel_id>/pricing', methods=['GET'])
+@bp.route('/hotels/<hotel_key>/pricing', methods=['GET'])
 @jwt_required(optional=True)
-def get_hotel_pricing(hotel_id):
+def get_hotel_pricing(hotel_key):
     """Get latest pricing for a hotel for specific dates using Xotelo"""
     check_in = request.args.get('check_in', '').strip()
     check_out = request.args.get('check_out', '').strip()
     guests = request.args.get('guests', 2, type=int)
+    rooms = request.args.get('rooms', 1, type=int)
+    currency = request.args.get('currency', 'USD')
     
     if not check_in or not check_out:
         return jsonify({'msg': 'check_in and check_out parameters required'}), 400
     
     try:
-        pricing = get_pricing(hotel_id, check_in, check_out, guests)
+        pricing = get_pricing(hotel_key, check_in, check_out, guests, rooms, currency)
         if not pricing:
             return jsonify({'msg': 'Pricing not available'}), 404
         
@@ -219,19 +216,17 @@ def get_hotel_pricing(hotel_id):
         return jsonify({'msg': 'Error fetching hotel pricing', 'error': str(e)}), 500
 
 
-@bp.route('/hotels/heatmap', methods=['GET'])
+@bp.route('/hotels/<hotel_key>/heatmap', methods=['GET'])
 @jwt_required(optional=True)
-def get_hotel_heatmap_endpoint():
-    """Get hotel pricing heatmap for a location using Xotelo"""
-    location = request.args.get('location', '').strip()
-    check_in = request.args.get('check_in', '').strip()
+def get_hotel_heatmap_endpoint(hotel_key):
+    """Get hotel pricing heatmap for a specific hotel using Xotelo"""
     check_out = request.args.get('check_out', '').strip()
     
-    if not location or not check_in or not check_out:
-        return jsonify({'msg': 'location, check_in, and check_out parameters required'}), 400
+    if not check_out:
+        return jsonify({'msg': 'check_out parameter required'}), 400
     
     try:
-        heatmap = get_hotel_heatmap(location, check_in, check_out)
+        heatmap = get_hotel_heatmap(hotel_key, check_out)
         if not heatmap:
             return jsonify({'msg': 'Heatmap not available'}), 404
         
@@ -242,13 +237,29 @@ def get_hotel_heatmap_endpoint():
         return jsonify({'msg': 'Error fetching hotel heatmap', 'error': str(e)}), 500
 
 
+@bp.route('/airports', methods=['GET'])
+@jwt_required(optional=True)
+def search_airports_endpoint():
+    query = request.args.get('query', '').strip()
+    limit = request.args.get('limit', 10, type=int)
+    
+    if not query:
+        return jsonify({'msg': 'query parameter required'}), 400
+    
+    try:
+        airports = search_airports(query, limit)
+        return jsonify({
+            'airports': airports,
+            'count': len(airports)
+        }), 200
+    except Exception as e:
+        print(f"Error searching airports: {e}")
+        return jsonify({'msg': 'Error searching airports', 'error': str(e)}), 500
+
+
 @bp.route('/flights', methods=['GET'])
 @jwt_required(optional=True)
 def search_flights_endpoint():
-    """
-    Search for flights
-    Query params: origin, destination, departure_date, return_date, passengers, cabin_class
-    """
     origin = request.args.get('origin', '').strip()
     destination = request.args.get('destination', '').strip()
     departure_date = request.args.get('departure_date', '').strip()
@@ -262,11 +273,21 @@ def search_flights_endpoint():
     try:
         flights = search_flights(origin, destination, departure_date, return_date, passengers, cabin_class)
         
+        if not flights:
+            return jsonify({
+                'flights': [],
+                'count': 0,
+                'msg': 'No flights found. Try different dates or airports.'
+            }), 200
+        
         return jsonify({
             'flights': flights,
             'count': len(flights)
         }), 200
     
+    except ValueError as e:
+        print(f"Validation error searching flights: {e}")
+        return jsonify({'msg': str(e)}), 400
     except Exception as e:
         print(f"Error searching flights: {e}")
         return jsonify({'msg': 'Error searching flights', 'error': str(e)}), 500
@@ -313,7 +334,6 @@ def get_flight_status_endpoint():
 @bp.route('/guides/<destination>', methods=['GET'])
 @jwt_required(optional=True)
 def get_destination_guide_endpoint(destination):
-    """Get travel guide for a destination from Wikivoyage"""
     try:
         guide = get_destination_guide(destination)
         if not guide:
@@ -329,7 +349,6 @@ def get_destination_guide_endpoint(destination):
 @bp.route('/tips/<destination>', methods=['GET'])
 @jwt_required(optional=True)
 def get_travel_tips_endpoint(destination):
-    """Get travel tips for a destination from Wikivoyage"""
     try:
         tips = get_travel_tips(destination)
         if not tips:
@@ -340,4 +359,138 @@ def get_travel_tips_endpoint(destination):
     except Exception as e:
         print(f"Error fetching travel tips: {e}")
         return jsonify({'msg': 'Error fetching travel tips', 'error': str(e)}), 500
+
+
+@bp.route('/flight-destinations', methods=['GET'])
+@jwt_required(optional=True)
+def search_flight_destinations_endpoint():
+    origin = request.args.get('origin', '').strip()
+    max_price = request.args.get('max_price', type=float)
+    departure_date = request.args.get('departure_date', '').strip() or None
+    
+    if not origin:
+        return jsonify({'msg': 'origin parameter required'}), 400
+    
+    try:
+        destinations = search_flight_destinations(origin, max_price, departure_date)
+        return jsonify({
+            'destinations': destinations,
+            'count': len(destinations)
+        }), 200
+    except Exception as e:
+        print(f"Error searching flight destinations: {e}")
+        return jsonify({'msg': 'Error searching flight destinations', 'error': str(e)}), 500
+
+
+@bp.route('/cheapest-dates', methods=['GET'])
+@jwt_required(optional=True)
+def search_cheapest_dates_endpoint():
+    origin = request.args.get('origin', '').strip()
+    destination = request.args.get('destination', '').strip()
+    departure_date = request.args.get('departure_date', '').strip() or None
+    
+    if not origin or not destination:
+        return jsonify({'msg': 'origin and destination parameters required'}), 400
+    
+    try:
+        dates = search_cheapest_dates(origin, destination, departure_date)
+        return jsonify({
+            'dates': dates,
+            'count': len(dates)
+        }), 200
+    except Exception as e:
+        print(f"Error searching cheapest dates: {e}")
+        return jsonify({'msg': 'Error searching cheapest dates', 'error': str(e)}), 500
+
+
+@bp.route('/recommended-locations', methods=['GET'])
+@jwt_required(optional=True)
+def get_recommended_locations_endpoint():
+    city_codes = request.args.get('city_codes', '').strip()
+    city_list = [c.strip() for c in city_codes.split(',') if c.strip()] if city_codes else None
+    
+    try:
+        locations = get_recommended_locations(city_list)
+        return jsonify({
+            'locations': locations,
+            'count': len(locations)
+        }), 200
+    except Exception as e:
+        print(f"Error getting recommended locations: {e}")
+        return jsonify({'msg': 'Error getting recommended locations', 'error': str(e)}), 500
+
+
+@bp.route('/activities', methods=['GET'])
+@jwt_required(optional=True)
+def search_activities_endpoint():
+    lat = request.args.get('lat', type=float)
+    lon = request.args.get('lon', type=float)
+    radius = request.args.get('radius', 5, type=int)
+    
+    if not lat or not lon:
+        return jsonify({'msg': 'lat and lon parameters required'}), 400
+    
+    try:
+        activities = search_activities(lat, lon, radius)
+        return jsonify({
+            'activities': activities,
+            'count': len(activities)
+        }), 200
+    except Exception as e:
+        print(f"Error searching activities: {e}")
+        return jsonify({'msg': 'Error searching activities', 'error': str(e)}), 500
+
+
+@bp.route('/most-traveled', methods=['GET'])
+@jwt_required(optional=True)
+def get_most_traveled_endpoint():
+    origin = request.args.get('origin', '').strip()
+    period = request.args.get('period', '2024-01')
+    
+    if not origin:
+        return jsonify({'msg': 'origin parameter required'}), 400
+    
+    try:
+        destinations = get_most_traveled_destinations(origin, period)
+        return jsonify({
+            'destinations': destinations,
+            'count': len(destinations)
+        }), 200
+    except Exception as e:
+        print(f"Error getting most traveled destinations: {e}")
+        return jsonify({'msg': 'Error getting most traveled destinations', 'error': str(e)}), 500
+
+
+@bp.route('/flights/<flight_id>/seatmap', methods=['GET'])
+@jwt_required(optional=True)
+def get_seatmap_endpoint(flight_id):
+    try:
+        seatmap = get_seatmap(flight_id)
+        if not seatmap:
+            return jsonify({'msg': 'Seat map not available'}), 404
+        
+        return jsonify(seatmap), 200
+    except Exception as e:
+        print(f"Error fetching seat map: {e}")
+        return jsonify({'msg': 'Error fetching seat map', 'error': str(e)}), 500
+
+
+@bp.route('/flights/price', methods=['POST'])
+@jwt_required(optional=True)
+def price_flight_offer_endpoint():
+    data = request.get_json() or {}
+    flight_offer = data.get('flight_offer')
+    
+    if not flight_offer:
+        return jsonify({'msg': 'flight_offer required in request body'}), 400
+    
+    try:
+        priced_offer = price_flight_offer(flight_offer)
+        if not priced_offer:
+            return jsonify({'msg': 'Failed to price flight offer'}), 400
+        
+        return jsonify(priced_offer), 200
+    except Exception as e:
+        print(f"Error pricing flight offer: {e}")
+        return jsonify({'msg': 'Error pricing flight offer', 'error': str(e)}), 500
 

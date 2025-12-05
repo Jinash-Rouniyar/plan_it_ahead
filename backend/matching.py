@@ -105,9 +105,12 @@ def find_companions():
 @bp.route('/matches', methods=['GET'])
 @jwt_required()
 def get_matches():
-    identity = get_jwt_identity() or {}
-    user_id = identity.get('user_id')
-    if not user_id:
+    identity = get_jwt_identity()
+    if not identity:
+        return jsonify({'msg': 'invalid token'}), 401
+    try:
+        user_id = int(identity)
+    except (ValueError, TypeError):
         return jsonify({'msg': 'invalid token'}), 401
 
     session = get_session()

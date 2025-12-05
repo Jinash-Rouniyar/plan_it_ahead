@@ -1,7 +1,17 @@
 from flask import Blueprint, request, jsonify
 from flask_jwt_extended import jwt_required, get_jwt_identity
 from db_reflect import get_class, get_session
-from datetime import datetime
+from datetime import datetime, date, timedelta
+
+
+def _get_user_id():
+    user_id = get_jwt_identity()
+    if not user_id:
+        return None
+    try:
+        return int(user_id)
+    except (ValueError, TypeError):
+        return None
 
 bp = Blueprint('itineraries', __name__, url_prefix='/api/itineraries')
 
@@ -19,9 +29,12 @@ def _parse_datetime(s):
 @bp.route('', methods=['POST'])
 @jwt_required()
 def create_itinerary():
-    identity = get_jwt_identity() or {}
-    user_id = identity.get('user_id') if isinstance(identity, dict) else None
+    user_id = get_jwt_identity()
     if not user_id:
+        return jsonify({'msg': 'invalid token'}), 401
+    try:
+        user_id = int(user_id)
+    except (ValueError, TypeError):
         return jsonify({'msg': 'invalid token'}), 401
 
     data = request.get_json() or {}
@@ -47,12 +60,88 @@ def create_itinerary():
         session.close()
 
 
+@bp.route('/create-from-flights', methods=['POST'])
+@jwt_required()
+def create_itinerary_from_flights():
+    user_id = get_jwt_identity()
+    if not user_id:
+        return jsonify({'msg': 'invalid token'}), 401
+    try:
+        user_id = int(user_id)
+    except (ValueError, TypeError):
+        return jsonify({'msg': 'invalid token'}), 401
+
+    data = request.get_json() or {}
+    departure_date_str = data.get('departure_date', '').strip()
+    return_date_str = data.get('return_date', '').strip()
+    title = data.get('title', '').strip()
+
+    if not departure_date_str or not return_date_str:
+        return jsonify({'msg': 'departure_date and return_date are required'}), 400
+
+    try:
+        departure_date = date.fromisoformat(departure_date_str)
+        return_date = date.fromisoformat(return_date_str)
+    except ValueError:
+        return jsonify({'msg': 'Invalid date format. Use YYYY-MM-DD'}), 400
+
+    if return_date <= departure_date:
+        return jsonify({'msg': 'return_date must be after departure_date'}), 400
+
+    if not title:
+        num_days = (return_date - departure_date).days
+        title = f"Trip ({num_days} days)"
+
+    Itinerary = get_class('itinerary')
+    session = get_session()
+    try:
+        # Check if table has start_date and end_date columns
+        if hasattr(Itinerary, 'start_date') and hasattr(Itinerary, 'end_date'):
+            it = Itinerary(
+                user_id=user_id,
+                title=title,
+                start_date=departure_date,
+                end_date=return_date
+            )
+        elif hasattr(Itinerary, 'title'):
+            # Fallback: use title if available
+            it = Itinerary(user_id=user_id, title=title)
+        else:
+            # Basic fallback
+            it = Itinerary(user_id=user_id)
+        
+        session.add(it)
+        session.commit()
+
+        # Get the itinerary ID (handle both 'id' and 'itinerary_id' column names)
+        itinerary_id = getattr(it, 'itinerary_id', None) or getattr(it, 'id', None)
+
+        num_days = (return_date - departure_date).days
+
+        return jsonify({
+            'itinerary_id': itinerary_id,
+            'user_id': user_id,
+            'title': title,
+            'start_date': departure_date.isoformat(),
+            'end_date': return_date.isoformat(),
+            'num_days': num_days
+        }), 201
+    except Exception as e:
+        session.rollback()
+        return jsonify({'msg': str(e)}), 400
+    finally:
+        session.close()
+
+
 @bp.route('', methods=['GET'])
 @jwt_required()
 def list_itineraries():
-    identity = get_jwt_identity() or {}
-    user_id = identity.get('user_id') if isinstance(identity, dict) else None
+    user_id = get_jwt_identity()
     if not user_id:
+        return jsonify({'msg': 'invalid token'}), 401
+    try:
+        user_id = int(user_id)
+    except (ValueError, TypeError):
         return jsonify({'msg': 'invalid token'}), 401
 
     Itinerary = get_class('itinerary')
@@ -75,9 +164,12 @@ def list_itineraries():
 @bp.route('/<int:itinerary_id>', methods=['GET'])
 @jwt_required()
 def get_itinerary(itinerary_id):
-    identity = get_jwt_identity() or {}
-    user_id = identity.get('user_id') if isinstance(identity, dict) else None
+    user_id = get_jwt_identity()
     if not user_id:
+        return jsonify({'msg': 'invalid token'}), 401
+    try:
+        user_id = int(user_id)
+    except (ValueError, TypeError):
         return jsonify({'msg': 'invalid token'}), 401
 
     Itinerary = get_class('itinerary')
@@ -99,8 +191,7 @@ def get_itinerary(itinerary_id):
 @bp.route('/<int:itinerary_id>', methods=['PUT'])
 @jwt_required()
 def update_itinerary(itinerary_id):
-    identity = get_jwt_identity() or {}
-    user_id = identity.get('user_id') if isinstance(identity, dict) else None
+    user_id = _get_user_id()
     if not user_id:
         return jsonify({'msg': 'invalid token'}), 401
 
@@ -130,8 +221,7 @@ def update_itinerary(itinerary_id):
 @bp.route('/<int:itinerary_id>', methods=['DELETE'])
 @jwt_required()
 def delete_itinerary(itinerary_id):
-    identity = get_jwt_identity() or {}
-    user_id = identity.get('user_id') if isinstance(identity, dict) else None
+    user_id = _get_user_id()
     if not user_id:
         return jsonify({'msg': 'invalid token'}), 401
 
@@ -151,12 +241,111 @@ def delete_itinerary(itinerary_id):
         session.close()
 
 
-@bp.route('/<int:itinerary_id>/budget', methods=['POST'])
+@bp.route('/<int:itinerary_id>/time-slots', methods=['GET'])
+@jwt_required()
+def get_time_slots(itinerary_id):
+    user_id = _get_user_id()
+    if not user_id:
+        return jsonify({'msg': 'invalid token'}), 401
+
+    Itinerary = get_class('itinerary')
+    session = get_session()
+    try:
+        # Handle both 'itinerary_id' and 'id' column names
+        itinerary_filter = {}
+        if hasattr(Itinerary, 'itinerary_id'):
+            itinerary_filter['itinerary_id'] = itinerary_id
+        elif hasattr(Itinerary, 'id'):
+            itinerary_filter['id'] = itinerary_id
+        else:
+            return jsonify({'msg': 'Cannot determine itinerary ID column'}), 500
+        
+        itinerary_filter['user_id'] = user_id
+        it = session.query(Itinerary).filter_by(**itinerary_filter).first()
+        if not it:
+            return jsonify({'msg': 'not found or unauthorized'}), 404
+
+        # Get start and end dates
+        start_date = None
+        end_date = None
+        if hasattr(it, 'start_date') and it.start_date:
+            start_date = it.start_date if isinstance(it.start_date, date) else date.fromisoformat(str(it.start_date))
+        if hasattr(it, 'end_date') and it.end_date:
+            end_date = it.end_date if isinstance(it.end_date, date) else date.fromisoformat(str(it.end_date))
+
+        if not start_date or not end_date:
+            return jsonify({'msg': 'Itinerary must have start_date and end_date'}), 400
+
+        num_days = (end_date - start_date).days + 1
+
+        # Get existing items
+        ItineraryItem = get_class('itinerary_item')
+        items = session.query(ItineraryItem).filter_by(itinerary_id=itinerary_id).all()
+
+        # Build items by day
+        items_by_day = {}
+        for item in items:
+            day_num = getattr(item, 'day_number', 1)
+            if day_num not in items_by_day:
+                items_by_day[day_num] = []
+            
+            item_dict = {}
+            for key in item.__table__.columns.keys():
+                value = getattr(item, key)
+                if isinstance(value, datetime):
+                    item_dict[key] = value.isoformat()
+                else:
+                    item_dict[key] = value
+            items_by_day[day_num].append(item_dict)
+
+        # Generate 24-hour time slots for each day
+        days = []
+        for day_num in range(1, num_days + 1):
+            slots = []
+            for hour in range(24):
+                slot_start = f"{hour:02d}:00"
+                slot_end = f"{(hour + 1) % 24:02d}:00"
+                
+                # Find items in this time slot
+                slot_items = []
+                for item in items_by_day.get(day_num, []):
+                    item_time = item.get('time', '')
+                    if item_time:
+                        try:
+                            item_hour, item_min = map(int, item_time.split(':'))
+                            if item_hour == hour:
+                                slot_items.append(item)
+                        except (ValueError, AttributeError):
+                            pass
+                
+                slots.append({
+                    'start': slot_start,
+                    'end': slot_end,
+                    'items': slot_items,
+                    'occupied': len(slot_items) > 0
+                })
+            
+            days.append({
+                'day': day_num,
+                'date': (start_date + timedelta(days=day_num - 1)).isoformat(),
+                'slots': slots
+            })
+
+        return jsonify({
+            'itinerary_id': itinerary_id,
+            'start_date': start_date.isoformat(),
+            'end_date': end_date.isoformat(),
+            'num_days': num_days,
+            'days': days
+        }), 200
+    finally:
+        session.close()
+
+
+@bp.route('/<int:itinerary_id>/budget', methods=['GET', 'POST'])
 @jwt_required()
 def calculate_budget(itinerary_id):
-    """Enhanced budget calculation: sums all items in the itinerary"""
-    identity = get_jwt_identity() or {}
-    user_id = identity.get('user_id') if isinstance(identity, dict) else None
+    user_id = _get_user_id()
     if not user_id:
         return jsonify({'msg': 'invalid token'}), 401
 
@@ -167,22 +356,29 @@ def calculate_budget(itinerary_id):
         if not it:
             return jsonify({'msg': 'not found or unauthorized'}), 404
         
-        # Try to get itinerary items if table exists
-        total_budget = 0.0
-        try:
-            ItineraryItem = get_class('itinerary_item')
-            items = session.query(ItineraryItem).filter_by(itinerary_id=itinerary_id).all()
-            for item in items:
-                if hasattr(item, 'estimated_cost') and item.estimated_cost:
-                    total_budget += float(item.estimated_cost)
-        except (RuntimeError, AttributeError):
-            # If itinerary_item table doesn't exist, fall back to total_cost
-            total_budget = float(it.total_cost) if it.total_cost is not None else 0.0
+        total_budget = float(it.total_cost) if hasattr(it, 'total_cost') and it.total_cost else 0.0
+        
+        if request.method == 'POST':
+            data = request.get_json() or {}
+            breakdown = data.get('breakdown', {
+                'flights': total_budget,
+                'hotels': 0.0,
+                'attractions': 0.0,
+                'other': 0.0
+            })
+        else:
+            breakdown = {
+                'flights': total_budget,
+                'hotels': 0.0,
+                'attractions': 0.0,
+                'other': 0.0
+            }
         
         return jsonify({
-            'itinerary_id': it.itinerary_id,
-            'estimated_budget': total_budget,
-            'item_count': len(items) if 'items' in locals() else 0
+            'itinerary_id': itinerary_id,
+            'total_budget': round(total_budget, 2),
+            'breakdown': {k: round(float(v), 2) for k, v in breakdown.items()},
+            'item_count': 0
         }), 200
     finally:
         session.close()
@@ -191,9 +387,7 @@ def calculate_budget(itinerary_id):
 @bp.route('/<int:itinerary_id>/items', methods=['GET'])
 @jwt_required()
 def get_itinerary_items(itinerary_id):
-    """Get all items in an itinerary"""
-    identity = get_jwt_identity() or {}
-    user_id = identity.get('user_id') if isinstance(identity, dict) else None
+    user_id = _get_user_id()
     if not user_id:
         return jsonify({'msg': 'invalid token'}), 401
 
@@ -204,50 +398,66 @@ def get_itinerary_items(itinerary_id):
         if not it:
             return jsonify({'msg': 'not found or unauthorized'}), 404
         
-        # Try to get itinerary items
-        try:
-            ItineraryItem = get_class('itinerary_item')
-            items = session.query(ItineraryItem).filter_by(itinerary_id=itinerary_id).order_by(ItineraryItem.item_order.asc() if hasattr(ItineraryItem, 'item_order') else ItineraryItem.item_id.asc()).all()
-            
-            items_list = []
-            for item in items:
-                item_dict = {}
-                # Dynamically get all attributes
-                for key in item.__table__.columns.keys():
-                    value = getattr(item, key)
-                    if isinstance(value, datetime):
-                        item_dict[key] = value.isoformat()
-                    else:
-                        item_dict[key] = value
-                items_list.append(item_dict)
-            
-            return jsonify({'items': items_list}), 200
-        except (RuntimeError, AttributeError):
-            # If table doesn't exist, return empty list
-            return jsonify({'items': []}), 200
+        # Items are stored in localStorage on frontend
+        # Return empty list - frontend manages pending items
+        return jsonify({'items': []}), 200
     finally:
         session.close()
+
+
+def _check_time_conflict(items, day_number, start_time, duration_minutes):
+    """Check if a time slot conflicts with existing items"""
+    if not start_time or not duration_minutes:
+        return None, None
+    
+    try:
+        # Parse start time (HH:MM format)
+        start_hour, start_min = map(int, start_time.split(':'))
+        start_total_minutes = start_hour * 60 + start_min
+        end_total_minutes = start_total_minutes + duration_minutes
+        
+        # Check against existing items on the same day
+        for item in items:
+            if item.get('day_number') != day_number:
+                continue
+            
+            item_time = item.get('time', '')
+            item_duration = item.get('duration_minutes', 0)
+            
+            if not item_time or not item_duration:
+                continue
+            
+            try:
+                item_hour, item_min = map(int, item_time.split(':'))
+                item_start = item_hour * 60 + item_min
+                item_end = item_start + item_duration
+                
+                # Check for overlap
+                if not (end_total_minutes <= item_start or start_total_minutes >= item_end):
+                    return {
+                        'conflicts_with': item.get('item_name', 'Unknown'),
+                        'conflict_time': item_time,
+                        'conflict_duration': item_duration
+                    }, item
+            except (ValueError, AttributeError):
+                continue
+        
+        return None, None
+    except (ValueError, AttributeError):
+        return None, None
 
 
 @bp.route('/<int:itinerary_id>/items', methods=['POST'])
 @jwt_required()
 def add_itinerary_item(itinerary_id):
-    """Add an item (attraction, hotel, flight) to an itinerary"""
-    identity = get_jwt_identity() or {}
-    user_id = identity.get('user_id') if isinstance(identity, dict) else None
+    user_id = _get_user_id()
     if not user_id:
         return jsonify({'msg': 'invalid token'}), 401
 
     data = request.get_json() or {}
     item_type = data.get('item_type')  # 'attraction', 'hotel', 'flight'
-    item_id = data.get('item_id')  # External ID (xid, hotel_id, flight_id)
     item_name = data.get('item_name', '')
     estimated_cost = data.get('estimated_cost', 0.0)
-    day_number = data.get('day_number', 1)
-    time = data.get('time', '')
-    duration_minutes = data.get('duration_minutes', 60)
-    item_order = data.get('item_order', 0)
-    metadata = data.get('metadata', {})  # Additional item data
 
     Itinerary = get_class('itinerary')
     session = get_session()
@@ -256,51 +466,16 @@ def add_itinerary_item(itinerary_id):
         if not it:
             return jsonify({'msg': 'not found or unauthorized'}), 404
         
-        # Try to add item to itinerary_item table
-        try:
-            ItineraryItem = get_class('itinerary_item')
-            
-            # Get max order if not provided
-            if item_order == 0:
-                max_order = session.query(session.query(ItineraryItem).filter_by(itinerary_id=itinerary_id).count()).scalar() or 0
-                item_order = max_order + 1
-            
-            # Create item with available columns
-            item_data = {
+        # Items are stored temporarily in frontend localStorage
+        # Return success - actual storage happens on save
+        return jsonify({
+            'item': {
                 'itinerary_id': itinerary_id,
+                'name': item_name,
                 'item_type': item_type,
-                'item_id': item_id,
-                'item_name': item_name,
-                'estimated_cost': estimated_cost,
-                'day_number': day_number,
-                'item_order': item_order
+                'estimated_cost': estimated_cost
             }
-            
-            # Add optional fields if they exist in the table
-            if hasattr(ItineraryItem, 'time'):
-                item_data['time'] = time
-            if hasattr(ItineraryItem, 'duration_minutes'):
-                item_data['duration_minutes'] = duration_minutes
-            if hasattr(ItineraryItem, 'metadata'):
-                item_data['metadata'] = metadata
-            
-            item = ItineraryItem(**item_data)
-            session.add(item)
-            session.commit()
-            
-            # Return created item
-            item_dict = {}
-            for key in item.__table__.columns.keys():
-                value = getattr(item, key)
-                if isinstance(value, datetime):
-                    item_dict[key] = value.isoformat()
-                else:
-                    item_dict[key] = value
-            
-            return jsonify({'item': item_dict}), 201
-        except (RuntimeError, AttributeError) as e:
-            # If table doesn't exist, return error
-            return jsonify({'msg': 'itinerary_item table not found', 'error': str(e)}), 500
+        }), 201
     except Exception as e:
         session.rollback()
         return jsonify({'msg': str(e)}), 400
@@ -311,9 +486,7 @@ def add_itinerary_item(itinerary_id):
 @bp.route('/<int:itinerary_id>/items/<int:item_id>', methods=['PUT'])
 @jwt_required()
 def update_itinerary_item(itinerary_id, item_id):
-    """Update an itinerary item"""
-    identity = get_jwt_identity() or {}
-    user_id = identity.get('user_id') if isinstance(identity, dict) else None
+    user_id = _get_user_id()
     if not user_id:
         return jsonify({'msg': 'invalid token'}), 401
 
@@ -356,9 +529,7 @@ def update_itinerary_item(itinerary_id, item_id):
 @bp.route('/<int:itinerary_id>/items/<int:item_id>', methods=['DELETE'])
 @jwt_required()
 def delete_itinerary_item(itinerary_id, item_id):
-    """Remove an item from an itinerary"""
-    identity = get_jwt_identity() or {}
-    user_id = identity.get('user_id') if isinstance(identity, dict) else None
+    user_id = _get_user_id()
     if not user_id:
         return jsonify({'msg': 'invalid token'}), 401
 
@@ -391,12 +562,176 @@ def delete_itinerary_item(itinerary_id, item_id):
         session.close()
 
 
+@bp.route('/<int:itinerary_id>/flights', methods=['POST'])
+@jwt_required()
+def add_flight_to_itinerary(itinerary_id):
+    user_id = _get_user_id()
+    if not user_id:
+        return jsonify({'msg': 'invalid token'}), 401
+
+    data = request.get_json() or {}
+    
+    Itinerary = get_class('itinerary')
+    session = get_session()
+    try:
+        it = session.query(Itinerary).filter_by(itinerary_id=itinerary_id, user_id=user_id).first()
+        if not it:
+            return jsonify({'msg': 'not found or unauthorized'}), 404
+        
+        # Add flight to flights table
+        try:
+            Flight = get_class('flights')
+            
+            # Extract flight data with placeholder values for missing fields
+            flight_data = {
+                'flight_num': data.get('flight_number', data.get('flight_id', 'N/A'))[:20] if data.get('flight_number', data.get('flight_id')) else 'N/A',
+                'airline': data.get('airline', 'Unknown')[:50] if data.get('airline') else 'Unknown',
+                'departure_time': data.get('departure_date', data.get('departure_time')),
+                'arrival_time': data.get('arrival_date', data.get('arrival_time')),
+                'from_city': data.get('origin_city', data.get('origin', 'Unknown'))[:50] if data.get('origin_city', data.get('origin')) else 'Unknown',
+                'to_city': data.get('destination_city', data.get('destination', 'Unknown'))[:50] if data.get('destination_city', data.get('destination')) else 'Unknown',
+                'from_airport': data.get('origin', 'N/A')[:10] if data.get('origin') else 'N/A',
+                'to_airport': data.get('destination', 'N/A')[:10] if data.get('destination') else 'N/A',
+                'price': float(data.get('price', 0)) if data.get('price') else 0.0,
+            }
+            
+            # Handle class field (might be named differently)
+            if hasattr(Flight, 'class_'):
+                flight_data['class_'] = data.get('travel_class', data.get('cabin_class', 'Economy'))[:20]
+            elif hasattr(Flight, 'flight_class'):
+                flight_data['flight_class'] = data.get('travel_class', data.get('cabin_class', 'Economy'))[:20]
+            
+            # Handle duration
+            duration_str = data.get('duration', '')
+            if hasattr(Flight, 'duration'):
+                flight_data['duration'] = duration_str[:20] if duration_str else 'N/A'
+            
+            flight = Flight(**flight_data)
+            session.add(flight)
+            session.commit()
+            
+            # Return flight info
+            flight_id = getattr(flight, 'flight_id', None) or getattr(flight, 'id', None)
+            return jsonify({
+                'flight': {
+                    'flight_id': flight_id,
+                    **flight_data
+                }
+            }), 201
+        except (RuntimeError, AttributeError) as e:
+            return jsonify({'msg': f'flights table error: {str(e)}'}), 500
+    except Exception as e:
+        session.rollback()
+        return jsonify({'msg': str(e)}), 400
+    finally:
+        session.close()
+
+
+@bp.route('/<int:itinerary_id>/save', methods=['POST'])
+@jwt_required()
+def save_itinerary(itinerary_id):
+    user_id = _get_user_id()
+    if not user_id:
+        return jsonify({'msg': 'invalid token'}), 401
+
+    data = request.get_json() or {}
+    items = data.get('items', [])
+    flights = data.get('flights', [])
+    
+    Itinerary = get_class('itinerary')
+    session = get_session()
+    try:
+        it = session.query(Itinerary).filter_by(itinerary_id=itinerary_id, user_id=user_id).first()
+        if not it:
+            return jsonify({'msg': 'not found or unauthorized'}), 404
+        
+        total_cost = 0.0
+        saved_items = []
+        saved_flights = []
+        breakdown = {
+            'flights': 0.0,
+            'hotels': 0.0,
+            'attractions': 0.0,
+            'other': 0.0
+        }
+        
+        # Save flights to flights table
+        try:
+            Flight = get_class('flights')
+            
+            for flight_data in flights:
+                price = float(flight_data.get('price', 0)) if flight_data.get('price') else 0.0
+                total_cost += price
+                breakdown['flights'] += price
+                
+                flight_record = {
+                    'flight_num': str(flight_data.get('flight_number', flight_data.get('flight_id', 'N/A')))[:20],
+                    'airline': str(flight_data.get('airline', 'Unknown'))[:50],
+                    'departure_time': flight_data.get('departure_date', flight_data.get('departure_time')),
+                    'arrival_time': flight_data.get('arrival_date', flight_data.get('arrival_time')),
+                    'from_city': str(flight_data.get('origin_city', flight_data.get('origin', 'Unknown')))[:50],
+                    'to_city': str(flight_data.get('destination_city', flight_data.get('destination', 'Unknown')))[:50],
+                    'from_airport': str(flight_data.get('origin', 'N/A'))[:10],
+                    'to_airport': str(flight_data.get('destination', 'N/A'))[:10],
+                    'price': price,
+                }
+                
+                # Handle class field
+                if hasattr(Flight, 'class_'):
+                    flight_record['class_'] = str(flight_data.get('travel_class', 'Economy'))[:20]
+                elif hasattr(Flight, 'flight_class'):
+                    flight_record['flight_class'] = str(flight_data.get('travel_class', 'Economy'))[:20]
+                
+                if hasattr(Flight, 'duration'):
+                    flight_record['duration'] = str(flight_data.get('duration', 'N/A'))[:20]
+                
+                flight = Flight(**flight_record)
+                session.add(flight)
+                saved_flights.append(flight_record)
+        except Exception as e:
+            print(f"Error saving flights: {e}")
+        
+        # Calculate cost from other items and categorize
+        for item in items:
+            cost = float(item.get('price', item.get('estimated_cost', 0))) if item.get('price', item.get('estimated_cost')) else 0.0
+            total_cost += cost
+            item_type = item.get('type', item.get('item_type', 'other')).lower()
+            
+            if item_type in ['hotel', 'hotels', 'accommodation']:
+                breakdown['hotels'] += cost
+            elif item_type in ['attraction', 'attractions', 'poi']:
+                breakdown['attractions'] += cost
+            else:
+                breakdown['other'] += cost
+            
+            saved_items.append({'name': item.get('name', 'Unknown'), 'cost': cost, 'type': item_type})
+        
+        # Update itinerary total_cost
+        if hasattr(it, 'total_cost'):
+            it.total_cost = total_cost
+        
+        session.commit()
+        
+        return jsonify({
+            'itinerary_id': itinerary_id,
+            'total_cost': round(total_cost, 2),
+            'breakdown': {k: round(v, 2) for k, v in breakdown.items()},
+            'saved_flights': saved_flights,
+            'saved_items': saved_items,
+            'flight_count': len(saved_flights),
+            'item_count': len(saved_items)
+        }), 200
+    except Exception as e:
+        session.rollback()
+        return jsonify({'msg': str(e)}), 400
+    finally:
+        session.close()
+
+
 @bp.route('/<int:itinerary_id>/items/reorder', methods=['PUT'])
 @jwt_required()
 def reorder_itinerary_items(itinerary_id):
-    """Reorder items in an itinerary (for drag-and-drop)"""
-    identity = get_jwt_identity() or {}
-    user_id = identity.get('user_id') if isinstance(identity, dict) else None
+    user_id = _get_user_id()
     if not user_id:
         return jsonify({'msg': 'invalid token'}), 401
 

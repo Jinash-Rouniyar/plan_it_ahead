@@ -6,7 +6,7 @@ import requests
 from typing import Optional, Dict, List, Any
 
 OPENTRIPMAP_API_KEY = os.getenv('OPENTRIPMAP_API_KEY')
-OPENTRIPMAP_BASE_URL = 'https://api.opentripmap.io/0.1/en'
+OPENTRIPMAP_BASE_URL = 'https://api.opentripmap.com/0.1/en'
 
 
 def search_pois(location: str, category: Optional[str] = None, radius: int = 5000, limit: int = 20) -> List[Dict[str, Any]]:
@@ -38,6 +38,7 @@ def search_pois(location: str, category: Optional[str] = None, radius: int = 500
         geocode_data = geocode_response.json()
         
         if not geocode_data or 'lat' not in geocode_data:
+            print(f"OpenTripMap: No coordinates found for location '{location}'")
             return []
         
         lat = geocode_data['lat']
@@ -60,10 +61,16 @@ def search_pois(location: str, category: Optional[str] = None, radius: int = 500
         pois_response.raise_for_status()
         pois_data = pois_response.json()
         
-        return pois_data.get('features', [])
+        features = pois_data.get('features', [])
+        if not features:
+            print(f"OpenTripMap: No POIs found for location '{location}' with radius {radius}m")
+        
+        return features
     
     except requests.exceptions.RequestException as e:
         print(f"Error fetching POIs from OpenTripMap: {e}")
+        if hasattr(e, 'response') and e.response is not None:
+            print(f"Response status: {e.response.status_code}, body: {e.response.text[:200]}")
         return []
 
 
