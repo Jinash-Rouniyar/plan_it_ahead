@@ -4,10 +4,18 @@ import { Button } from '../components/ui/button';
 
 type SearchType = 'destinations' | 'attractions' | 'hotels' | 'flights';
 
+interface SearchResult {
+  name?: string;
+  title?: string;
+  description?: string;
+  price?: number;
+  rating?: number;
+}
+
 export function Search() {
   const [searchType, setSearchType] = useState<SearchType>('attractions');
   const [query, setQuery] = useState('');
-  const [results, setResults] = useState<any[]>([]);
+  const [results, setResults] = useState<SearchResult[]>([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
 
@@ -20,15 +28,17 @@ export function Search() {
     try {
       let response;
       switch (searchType) {
-        case 'destinations':
+        case 'destinations': {
           response = await api.get('/search/destinations', { params: { query } });
           setResults(response.data.destinations || []);
           break;
-        case 'attractions':
+        }
+        case 'attractions': {
           response = await api.get('/search/attractions', { params: { location: query } });
           setResults(response.data.attractions || []);
           break;
-        case 'hotels':
+        }
+        case 'hotels': {
           response = await api.get('/search/hotels', { 
             params: { 
               location: query,
@@ -38,7 +48,8 @@ export function Search() {
           });
           setResults(response.data.hotels || []);
           break;
-        case 'flights':
+        }
+        case 'flights': {
           const [origin, destination] = query.split(' to ');
           response = await api.get('/search/flights', { 
             params: { 
@@ -49,9 +60,11 @@ export function Search() {
           });
           setResults(response.data.flights || []);
           break;
+        }
       }
-    } catch (err: any) {
-      setError(err.response?.data?.msg || 'Search failed');
+    } catch (err) {
+      const errorResponse = err as { response?: { data?: { msg?: string } } };
+      setError(errorResponse.response?.data?.msg || 'Search failed');
     } finally {
       setLoading(false);
     }

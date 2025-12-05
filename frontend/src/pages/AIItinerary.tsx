@@ -1,15 +1,36 @@
 import { useState } from 'react';
 import api from '../services/api';
-import { useAuth } from '../hooks/useAuthHook';
 import { Button } from '../components/ui/button';
+
+interface Activity {
+  time: string;
+  activity: string;
+  estimated_cost?: number;
+}
+
+interface Day {
+  day: number;
+  date: string;
+  activities?: Activity[];
+}
+
+interface Itinerary {
+  days?: Day[];
+}
+
+interface Recommendation {
+  name: string;
+  reasoning: string;
+  estimated_cost?: number;
+}
 
 export function AIItinerary() {
   const [destination, setDestination] = useState('');
   const [startDate, setStartDate] = useState('');
   const [endDate, setEndDate] = useState('');
   const [budget, setBudget] = useState('');
-  const [itinerary, setItinerary] = useState<any>(null);
-  const [recommendations, setRecommendations] = useState<any[]>([]);
+  const [itinerary, setItinerary] = useState<Itinerary | null>(null);
+  const [recommendations, setRecommendations] = useState<Recommendation[]>([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
 
@@ -30,8 +51,9 @@ export function AIItinerary() {
         budget: budget ? parseFloat(budget) : null
       });
       setItinerary(response.data);
-    } catch (err: any) {
-      setError(err.response?.data?.msg || 'Failed to generate itinerary');
+    } catch (err) {
+      const errorResponse = err as { response?: { data?: { msg?: string } } };
+      setError(errorResponse.response?.data?.msg || 'Failed to generate itinerary');
     } finally {
       setLoading(false);
     }
@@ -52,8 +74,9 @@ export function AIItinerary() {
         current_itinerary: itinerary?.days || []
       });
       setRecommendations(response.data.recommendations || []);
-    } catch (err: any) {
-      setError(err.response?.data?.msg || 'Failed to get recommendations');
+    } catch (err) {
+      const errorResponse = err as { response?: { data?: { msg?: string } } };
+      setError(errorResponse.response?.data?.msg || 'Failed to get recommendations');
     } finally {
       setLoading(false);
     }
@@ -135,11 +158,11 @@ export function AIItinerary() {
             <div>
               <h2 className="text-xl font-semibold mb-4">Generated Itinerary</h2>
               <div className="space-y-4">
-                {itinerary.days?.map((day: any, index: number) => (
+                {itinerary.days?.map((day, index) => (
                   <div key={index} className="border rounded-lg p-4">
                     <h3 className="font-semibold mb-2">Day {day.day}: {day.date}</h3>
                     <div className="space-y-2">
-                      {day.activities?.map((activity: any, actIndex: number) => (
+                      {day.activities?.map((activity, actIndex) => (
                         <div key={actIndex} className="text-sm">
                           <span className="font-medium">{activity.time}</span> - {activity.activity}
                           {activity.estimated_cost && (

@@ -1,34 +1,50 @@
-import { useState, useEffect, useRef } from 'react';
+import { useState, useEffect, useRef, useCallback } from 'react';
 import { useParams } from 'react-router-dom';
 import api from '../services/api';
 import { Button } from '../components/ui/button';
 
+interface Conversation {
+  conversation_id: number;
+  other_user?: {
+    user_id: number;
+    name: string;
+  };
+  last_message?: {
+    content: string;
+  };
+}
+
+interface Message {
+  message_id: number;
+  sender_id: number;
+  content: string;
+  created_at?: string;
+}
+
 export function Chat() {
   const { id } = useParams<{ id: string }>();
-  const [conversations, setConversations] = useState<any[]>([]);
-  const [messages, setMessages] = useState<any[]>([]);
+  const [conversations, setConversations] = useState<Conversation[]>([]);
+  const [messages, setMessages] = useState<Message[]>([]);
   const [selectedConversation, setSelectedConversation] = useState<number | null>(id ? parseInt(id) : null);
   const [message, setMessage] = useState('');
   const messagesEndRef = useRef<HTMLDivElement>(null);
 
-  useEffect(() => {
-    loadConversations();
+  const scrollToBottom = useCallback(() => {
+    messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
   }, []);
 
-  useEffect(() => {
-    if (selectedConversation) {
-      loadMessages();
-      // Poll for new messages every 3 seconds
-      const interval = setInterval(loadMessages, 3000);
-      return () => clearInterval(interval);
+  const loadMessages = useCallback(async () => {
+    if (!selectedConversation) return;
+    
+    try {
+      const response = await api.get(`/chat/conversations/${selectedConversation}/messages`);
+      setMessages(response.data.messages || []);
+    } catch (err) {
+      console.error('Failed to load messages:', err);
     }
   }, [selectedConversation]);
 
-  useEffect(() => {
-    scrollToBottom();
-  }, [messages]);
-
-  const loadConversations = async () => {
+  const loadConversations = useCallback(async () => {
     try {
       const response = await api.get('/chat/conversations');
       setConversations(response.data.conversations || []);
@@ -38,18 +54,29 @@ export function Chat() {
     } catch (err) {
       console.error('Failed to load conversations:', err);
     }
-  };
+  }, [selectedConversation]);
 
-  const loadMessages = async () => {
-    if (!selectedConversation) return;
-    
-    try {
-      const response = await api.get(`/chat/conversations/${selectedConversation}/messages`);
-      setMessages(response.data.messages || []);
-    } catch (err) {
-      console.error('Failed to load messages:', err);
+  useEffect(() => {
+    setTimeout(() => {
+      loadConversations();
+    }, 0);
+  }, [loadConversations]);
+
+  useEffect(() => {
+    if (selectedConversation) {
+      setTimeout(() => {
+        loadMessages();
+      }, 0);
+      const interval = setInterval(() => {
+        loadMessages();
+      }, 3000);
+      return () => clearInterval(interval);
     }
-  };
+  }, [selectedConversation, loadMessages]);
+
+  useEffect(() => {
+    scrollToBottom();
+  }, [messages, scrollToBottom]);
 
   const sendMessage = async () => {
     if (!message.trim() || !selectedConversation) return;
@@ -63,10 +90,6 @@ export function Chat() {
     } catch (err) {
       console.error('Failed to send message:', err);
     }
-  };
-
-  const scrollToBottom = () => {
-    messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
   };
 
   const currentConversation = conversations.find(c => c.conversation_id === selectedConversation);

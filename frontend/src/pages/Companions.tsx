@@ -2,11 +2,20 @@ import { useState, useEffect } from 'react';
 import api from '../services/api';
 import { Button } from '../components/ui/button';
 
+interface Match {
+  user_id: number;
+  name: string;
+  email: string;
+  compatibility_score: number;
+  shared_interests?: string[];
+  reasoning?: string;
+}
+
 export function Companions() {
   const [destination, setDestination] = useState('');
   const [startDate, setStartDate] = useState('');
   const [endDate, setEndDate] = useState('');
-  const [matches, setMatches] = useState<any[]>([]);
+  const [matches, setMatches] = useState<Match[]>([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
 
@@ -26,8 +35,9 @@ export function Companions() {
         end_date: endDate
       });
       setMatches(response.data.matches || []);
-    } catch (err: any) {
-      setError(err.response?.data?.msg || 'Failed to find companions');
+    } catch (err) {
+      const errorResponse = err as { response?: { data?: { msg?: string } } };
+      setError(errorResponse.response?.data?.msg || 'Failed to find companions');
     } finally {
       setLoading(false);
     }
@@ -41,8 +51,9 @@ export function Companions() {
       });
       // Refresh matches
       findCompanions();
-    } catch (err: any) {
-      setError(err.response?.data?.msg || 'Failed to connect');
+    } catch (err) {
+      const errorResponse = err as { response?: { data?: { msg?: string } } };
+      setError(errorResponse.response?.data?.msg || 'Failed to connect');
     }
   };
 

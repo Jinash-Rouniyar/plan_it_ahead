@@ -3,10 +3,22 @@ import { useParams } from 'react-router-dom';
 import api from '../services/api';
 import { Button } from '../components/ui/button';
 
+interface ItineraryItem {
+  item_id: number;
+  item_name: string;
+  day_number?: number;
+  time?: string;
+  estimated_cost?: number;
+}
+
+interface Itinerary {
+  title?: string;
+}
+
 export function ItineraryBuilder() {
   const { id } = useParams<{ id: string }>();
-  const [itinerary, setItinerary] = useState<any>(null);
-  const [items, setItems] = useState<any[]>([]);
+  const [itinerary, setItinerary] = useState<Itinerary | null>(null);
+  const [items, setItems] = useState<ItineraryItem[]>([]);
   const [loading, setLoading] = useState(true);
   const [budget, setBudget] = useState(0);
 
@@ -68,7 +80,7 @@ export function ItineraryBuilder() {
     if (!acc[day]) acc[day] = [];
     acc[day].push(item);
     return acc;
-  }, {} as Record<number, any[]>);
+  }, {} as Record<number, ItineraryItem[]>);
 
   return (
     <div className="container mx-auto px-4 py-8">
@@ -83,13 +95,11 @@ export function ItineraryBuilder() {
 
       <div className="space-y-6">
         {Object.keys(itemsByDay).length > 0 ? (
-          Object.entries(itemsByDay).map(([day, dayItems]) => {
-            const typedDayItems = dayItems as any[];
-            return (
+          Object.entries(itemsByDay).map(([day, dayItems]) => (
               <div key={day} className="border rounded-lg p-4">
                 <h2 className="text-xl font-semibold mb-4">Day {day}</h2>
                 <div className="space-y-2">
-                  {typedDayItems.map((item: any) => (
+                  {dayItems.map((item) => (
                     <div key={item.item_id} className="flex items-center justify-between p-3 bg-gray-50 rounded">
                       <div>
                         <h3 className="font-medium">{item.item_name}</h3>
@@ -107,8 +117,7 @@ export function ItineraryBuilder() {
                   ))}
                 </div>
               </div>
-            );
-          })
+            ))
         ) : (
           <p className="text-center text-gray-500">No items in this itinerary yet</p>
         )}
