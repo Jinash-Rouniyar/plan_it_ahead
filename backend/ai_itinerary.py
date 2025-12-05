@@ -2,6 +2,7 @@ from flask import Blueprint, request, jsonify
 from flask_jwt_extended import jwt_required, get_jwt_identity
 from db_reflect import get_class, get_session
 from services.ai_service import generate_itinerary, recommend_attractions
+from services.image_search import get_images_for_recommendations
 import json
 
 bp = Blueprint('ai', __name__, url_prefix='/api/ai')
@@ -22,7 +23,7 @@ def generate_itinerary_endpoint():
     destination = data.get('destination', '').strip()
     start_date = data.get('start_date', '').strip()
     end_date = data.get('end_date', '').strip()
-    budget = data.get('budget', type=float)
+    budget = float(data.get('budget', 0)) if data.get('budget') else None
     
     if not destination or not start_date or not end_date:
         return jsonify({'msg': 'destination, start_date, and end_date required'}), 400
@@ -94,6 +95,8 @@ def recommend_attractions_endpoint():
         destination=destination,
         current_itinerary=current_itinerary
     )
+    
+    recommendations = get_images_for_recommendations(recommendations, destination)
     
     session.close()
     return jsonify({
