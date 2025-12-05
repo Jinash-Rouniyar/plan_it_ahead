@@ -22,6 +22,7 @@ pip install -r requirements.txt
 ```bash
 cp .env.example .env
 ```
+   - On PowerShell use: `Copy-Item .env.example .env`
 
 5. Update the `.env` file with your configuration.
 
