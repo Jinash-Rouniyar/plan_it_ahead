@@ -2,6 +2,7 @@ from flask import Blueprint, request, jsonify
 from flask_jwt_extended import jwt_required, get_jwt_identity
 from db_reflect import get_class, get_session
 from datetime import datetime, date, timedelta
+import re
 
 
 def _get_user_id():
@@ -22,6 +23,47 @@ def _parse_datetime(s):
     try:
         # accept ISO format
         return datetime.fromisoformat(s)
+    except Exception:
+        return None
+
+
+def _parse_iso_duration_to_minutes(s):
+    """Parse ISO-8601 duration strings like 'PT31H40M' or 'PT13H20M' into integer minutes.
+    Returns an int number of minutes, or None if it can't be parsed.
+    Also accepts 'HH:MM' or numeric minute values as strings/ints.
+    """
+    if s is None:
+        return None
+    try:
+        # already numeric
+        if isinstance(s, (int, float)):
+            return int(s)
+
+        sval = str(s).strip()
+
+        # ISO 8601 duration: PT#H#M#S
+        m = re.match(r'^P(T)?(?:(\d+)H)?(?:(\d+)M)?(?:(\d+)S)?$', sval)
+        if m:
+            hours = int(m.group(2)) if m.group(2) else 0
+            minutes = int(m.group(3)) if m.group(3) else 0
+            seconds = int(m.group(4)) if m.group(4) else 0
+            total = hours * 60 + minutes + (seconds // 60)
+            return int(total)
+
+        # HH:MM or H:MM:SS
+        if ':' in sval:
+            parts = sval.split(':')
+            if len(parts) >= 2:
+                h = int(parts[0])
+                mpart = int(parts[1])
+                ssec = int(parts[2]) if len(parts) > 2 else 0
+                return h * 60 + mpart + (ssec // 60)
+
+        # plain number -> interpret as minutes
+        if re.match(r'^\d+$', sval):
+            return int(sval)
+
+        return None
     except Exception:
         return None
 
@@ -524,8 +566,7 @@ def update_itinerary_item(itinerary_id, item_id):
         return jsonify({'msg': str(e)}), 400
     finally:
         session.close()
-
-
+   
 @bp.route('/<int:itinerary_id>/items/<int:item_id>', methods=['DELETE'])
 @jwt_required()
 def delete_itinerary_item(itinerary_id, item_id):
@@ -601,10 +642,12 @@ def add_flight_to_itinerary(itinerary_id):
             elif hasattr(Flight, 'flight_class'):
                 flight_data['flight_class'] = data.get('travel_class', data.get('cabin_class', 'Economy'))[:20]
             
-            # Handle duration
+            # Handle duration (convert to integer minutes if possible)
             duration_str = data.get('duration', '')
             if hasattr(Flight, 'duration'):
-                flight_data['duration'] = duration_str[:20] if duration_str else 'N/A'
+                duration_minutes = _parse_iso_duration_to_minutes(duration_str)
+                # If parsing fails, attempt to store 0 or leave None so DB can handle defaults
+                flight_data['duration'] = int(duration_minutes) if duration_minutes is not None else None
             
             flight = Flight(**flight_data)
             session.add(flight)
@@ -655,17 +698,36 @@ def save_itinerary(itinerary_id):
             'other': 0.0
         }
         
-        # Save flights to flights table
+        # Save flights to flights table (avoid duplicates)
         try:
             Flight = get_class('flights')
-            
+
+            # Precompute flight_num values for all incoming flights
+            incoming_nums = []
+            computed_records = []
             for flight_data in flights:
+                fnum = str(flight_data.get('flight_number', flight_data.get('flight_id', 'N/A')))[:50]
+                incoming_nums.append(fnum)
+                computed_records.append((fnum, flight_data))
+
+            # Query DB for any existing flight_nums to avoid duplicates
+            existing_nums = set()
+            try:
+                col = getattr(Flight, 'flight_num')
+                q = session.query(col).filter(col.in_(incoming_nums)).all()
+                existing_nums = set([r[0] for r in q if r and r[0]])
+            except Exception:
+                existing_nums = set()
+
+            added_nums = set()
+
+            for fnum, flight_data in computed_records:
                 price = float(flight_data.get('price', 0)) if flight_data.get('price') else 0.0
                 total_cost += price
                 breakdown['flights'] += price
-                
+
                 flight_record = {
-                    'flight_num': str(flight_data.get('flight_number', flight_data.get('flight_id', 'N/A')))[:20],
+                    'flight_num': fnum[:50],
                     'airline': str(flight_data.get('airline', 'Unknown'))[:50],
                     'departure_time': flight_data.get('departure_date', flight_data.get('departure_time')),
                     'arrival_time': flight_data.get('arrival_date', flight_data.get('arrival_time')),
@@ -675,19 +737,31 @@ def save_itinerary(itinerary_id):
                     'to_airport': str(flight_data.get('destination', 'N/A'))[:10],
                     'price': price,
                 }
-                
+
                 # Handle class field
                 if hasattr(Flight, 'class_'):
                     flight_record['class_'] = str(flight_data.get('travel_class', 'Economy'))[:20]
                 elif hasattr(Flight, 'flight_class'):
                     flight_record['flight_class'] = str(flight_data.get('travel_class', 'Economy'))[:20]
-                
+
                 if hasattr(Flight, 'duration'):
-                    flight_record['duration'] = str(flight_data.get('duration', 'N/A'))[:20]
-                
-                flight = Flight(**flight_record)
-                session.add(flight)
-                saved_flights.append(flight_record)
+                    # Ensure we store an integer number of minutes for duration
+                    duration_minutes = _parse_iso_duration_to_minutes(flight_data.get('duration', ''))
+                    flight_record['duration'] = int(duration_minutes) if duration_minutes is not None else None
+
+                # Skip if DB already contains this flight_num or we've already added it in this batch
+                if fnum in existing_nums or fnum in added_nums:
+                    saved_flights.append(flight_record)
+                    continue
+
+                try:
+                    flight = Flight(**flight_record)
+                    session.add(flight)
+                    added_nums.add(fnum)
+                    saved_flights.append(flight_record)
+                except Exception as e:
+                    # If insertion fails, log and continue
+                    print(f"Error adding flight record: {e}")
         except Exception as e:
             print(f"Error saving flights: {e}")
         
@@ -750,27 +824,27 @@ def reorder_itinerary_items(itinerary_id):
         
         try:
             ItineraryItem = get_class('itinerary_item')
-            
+
             # Update order for each item
             for order_data in item_orders:
                 item_id = order_data.get('item_id')
                 new_order = order_data.get('item_order')
-                
+
                 if item_id and new_order is not None:
                     item = session.query(ItineraryItem).filter_by(
                         item_id=item_id,
                         itinerary_id=itinerary_id
                     ).first()
-                    
+
                     if item and hasattr(item, 'item_order'):
                         item.item_order = new_order
-            
+
             session.commit()
             return jsonify({'msg': 'reordered'}), 200
         except (RuntimeError, AttributeError) as e:
             return jsonify({'msg': 'itinerary_item table not found', 'error': str(e)}), 500
     except Exception as e:
-        session.rollback()
-        return jsonify({'msg': str(e)}), 400
+            session.rollback()
+            return jsonify({'msg': str(e)}), 400
     finally:
-        session.close()
+            session.close()

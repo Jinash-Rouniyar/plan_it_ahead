@@ -27,7 +27,7 @@ export function CreateItinerary() {
   const [destination, setDestination] = useState('');
   const [departureDate, setDepartureDate] = useState('');
   const [returnDate, setReturnDate] = useState('');
-  const [passengers, setPassengers] = useState(1);
+  const [passengers, setPassengers] = useState<number | ''>(1);
   const [outboundFlights, setOutboundFlights] = useState<Flight[]>([]);
   const [returnFlights, setReturnFlights] = useState<Flight[]>([]);
   const [selectedOutbound, setSelectedOutbound] = useState<string | null>(null);
@@ -104,7 +104,7 @@ export function CreateItinerary() {
           origin: origin.toUpperCase(),
           destination: destination.toUpperCase(),
           departure_date: departureDate,
-          passengers
+          passengers: Number(passengers) || 1
         }
       });
       setOutboundFlights(outboundResponse.data.flights || []);
@@ -116,7 +116,7 @@ export function CreateItinerary() {
             origin: destination.toUpperCase(),
             destination: origin.toUpperCase(),
             departure_date: returnDate,
-            passengers
+            passengers: Number(passengers) || 1
           }
         });
         setReturnFlights(returnResponse.data.flights || []);
@@ -302,7 +302,7 @@ export function CreateItinerary() {
               type="number"
               min="1"
               value={passengers}
-              onChange={(e) => setPassengers(parseInt(e.target.value) || 1)}
+              onChange={(e) => setPassengers(e.target.value === '' ? '' : parseInt(e.target.value))}
               className="mt-1"
             />
           </div>

@@ -57,6 +57,9 @@ export function Search() {
   const [searchType, setSearchType] = useState<SearchType>('attractions');
   const [query, setQuery] = useState('');
   const [results, setResults] = useState<SearchResult[]>([]);
+  const [attractionDetails, setAttractionDetails] = useState<Record<string, any>>({});
+  const [activitiesMap, setActivitiesMap] = useState<Record<string, any[]>>({});
+  const [expandedXid, setExpandedXid] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
   const [successMessage, setSuccessMessage] = useState('');
@@ -100,7 +103,74 @@ export function Search() {
         setCheckOut(itinerary.return_date);
       }
     }
+    // If we open the page with attractions selected, trigger a search
+    if (searchType === 'attractions') {
+      const q = storedItinerary?.destination || query;
+      if (q) {
+        setQuery(q);
+        // small delay to allow state to settle
+        setTimeout(() => handleSearch(), 0);
+      }
+    }
   }, []);
+
+  useEffect(() => {
+    // When user switches to attractions, auto-search using currentItinerary.destination if available
+    if (searchType === 'attractions') {
+      const locationQuery = currentItinerary?.destination || query;
+      if (locationQuery) {
+        setQuery(locationQuery);
+        handleSearch();
+      }
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [searchType]);
+
+  // Helper to switch tabs and clear/refresh results appropriately
+  const switchSearchType = (type: SearchType) => {
+    // clear existing results and expanded state when switching
+    setResults([]);
+    setExpandedXid(null);
+    setAttractionDetails({});
+    setActivitiesMap({});
+    setSearchType(type);
+
+    // Auto-search when switching to attractions or when hotels have dates
+    setTimeout(() => {
+      if (type === 'attractions') {
+        const q = currentItinerary?.destination || query;
+        if (q) handleSearch('attractions');
+      } else if (type === 'hotels') {
+        if (checkIn && checkOut && query) handleSearch('hotels');
+      }
+    }, 0);
+  };
+
+  // Helper: detect if an item looks like a hotel response
+  const isHotelLike = (item: any) => {
+    if (!item) return false;
+    return !!(item.hotel_id || item.hotel_key || item.price_per_night || item.rating || item.address);
+  };
+
+  // Normalize attraction fields (ensure image_url exists)
+  const normalizeAttraction = (item: any) => {
+    if (!item) return item;
+    const normalized = { ...item };
+    normalized.image_url = item.image_url || item.image || item.thumbnail || item.photo || null;
+    // keep xid/id mapping consistent
+    normalized.xid = item.xid || item.id || item.xid;
+    return normalized;
+  };
+
+  // Normalize hotel fields (ensure image exists and price_per_night is present)
+  const normalizeHotel = (item: any) => {
+    if (!item) return item;
+    const normalized = { ...item };
+    normalized.image = item.image || item.thumbnail || item.image_url || item.photo || null;
+    normalized.price_per_night = item.price_per_night || item.price || item.nightly_price || null;
+    normalized.hotel_id = item.hotel_id || item.id || item.hotel_key || null;
+    return normalized;
+  };
 
   const loadItineraries = async () => {
     try {
@@ -111,7 +181,8 @@ export function Search() {
     }
   };
 
-  const handleSearch = async () => {
+  const handleSearch = async (forceType?: SearchType) => {
+    const activeType = forceType || searchType;
     if (!query.trim()) return;
 
     setLoading(true);
@@ -120,10 +191,35 @@ export function Search() {
     
     try {
       let response;
-      if (searchType === 'attractions') {
+      if (activeType === 'attractions') {
+        // search attractions by location (city) and also clear any expanded state
         response = await api.get('/search/attractions', { params: { location: query } });
-        setResults(response.data.attractions || []);
-      } else if (searchType === 'hotels') {
+        // Debugging: log response for diagnosis if server returns unexpected shape
+        // eslint-disable-next-line no-console
+        console.debug('search/attractions response:', response.data);
+        // If the attractions endpoint returned an attractions array, normalize/filter it
+        if (response.data && response.data.attractions && Array.isArray(response.data.attractions)) {
+          const raw = response.data.attractions || [];
+          // Normalize each attraction and filter out items that look like hotels
+          const normalized = raw.map(normalizeAttraction).filter((it: any) => !isHotelLike(it));
+          // Debug: if any items were filtered out, log it
+          // eslint-disable-next-line no-console
+          console.debug('attractions fetched:', raw.length, 'kept:', normalized.length);
+
+          setResults(normalized);
+          setExpandedXid(null);
+          setAttractionDetails({});
+          setActivitiesMap({});
+          if (normalized.length === 0 && raw.length > 0) {
+            setError('Attractions endpoint returned results that appear to be hotels; none shown.');
+          }
+        } else {
+          // If the response doesn't include attractions, don't populate with hotels.
+          setResults([]);
+          // Surface a helpful error so the user knows something unexpected happened
+          setError('No attractions found (server returned unexpected data).');
+        }
+      } else if (activeType === 'hotels') {
         if (!checkIn || !checkOut) {
           setError('Check-in and check-out dates are required');
           setLoading(false);
@@ -137,7 +233,12 @@ export function Search() {
             check_out: checkOut
           } 
         });
-        setResults(response.data.hotels || []);
+        // Debugging: log hotel response
+        // eslint-disable-next-line no-console
+        console.debug('search/hotels response:', response.data);
+        const rawHotels = response.data.hotels || [];
+        const normalizedHotels = rawHotels.map(normalizeHotel);
+        setResults(normalizedHotels);
       }
     } catch (err) {
       interface ApiError {
@@ -147,6 +248,27 @@ export function Search() {
       setError(errorResponse.response?.data?.msg || 'Search failed');
     } finally {
       setLoading(false);
+    }
+  };
+
+  const fetchAttractionDetails = async (xid: string, lat?: number, lon?: number) => {
+    if (!xid) return;
+    try {
+      if (!attractionDetails[xid]) {
+        const resp = await api.get(`/search/attractions/${xid}`);
+        setAttractionDetails(prev => ({ ...prev, [xid]: resp.data }));
+      }
+
+      // fetch nearby activities (ticketed tours) using Amadeus endpoint if coords provided
+      const details = attractionDetails[xid] || (await api.get(`/search/attractions/${xid}`)).data;
+      const plat = lat || details.lat;
+      const plon = lon || details.lon;
+      if (plat && plon && !activitiesMap[xid]) {
+        const actResp = await api.get('/search/activities', { params: { lat: plat, lon: plon, radius: 10 } });
+        setActivitiesMap(prev => ({ ...prev, [xid]: actResp.data.activities || [] }));
+      }
+    } catch (e) {
+      console.error('Failed to load attraction details or activities', e);
     }
   };
 
@@ -230,15 +352,61 @@ export function Search() {
       return;
     }
 
-    if (!selectedItineraryId) {
-      setError('Please select an itinerary first');
-      return;
-    }
-
     setAdding(true);
     setError('');
 
     try {
+      // Ensure we have an itinerary to save into. If none selected, try to create one.
+      let itineraryId = selectedItineraryId as number | null;
+
+      if (!itineraryId) {
+        // Try to use the stored current itinerary
+        const stored = localStorage.getItem('planit_current_itinerary');
+        const storedItinerary = stored ? JSON.parse(stored) : null;
+
+        try {
+          let createResp: any = null;
+          if (storedItinerary && storedItinerary.departure_date && storedItinerary.return_date) {
+            // create using dates and optional title (uses create-from-flights endpoint)
+            createResp = await api.post('/itineraries/create-from-flights', {
+              departure_date: storedItinerary.departure_date,
+              return_date: storedItinerary.return_date,
+              title: storedItinerary.title || undefined
+            });
+          } else {
+            // Fallback: create an empty itinerary
+            createResp = await api.post('/itineraries', {});
+          }
+
+          itineraryId = createResp.data.itinerary_id;
+
+          // Store a minimal current itinerary locally so UX shows the selection
+          const title = storedItinerary?.title || `Itinerary ${ (itineraries?.length || 0) + 1 }`;
+          const current = {
+            itinerary_id: itineraryId,
+            title,
+            origin: storedItinerary?.origin,
+            destination: storedItinerary?.destination,
+            departure_date: storedItinerary?.departure_date,
+            return_date: storedItinerary?.return_date
+          };
+          localStorage.setItem('planit_current_itinerary', JSON.stringify(current));
+          setCurrentItinerary(current);
+          setSelectedItineraryId(itineraryId);
+          // reload itineraries list so user can see it in the dropdown
+          await loadItineraries();
+        } catch (createErr) {
+          interface ApiError {
+            response?: { data?: { msg?: string } };
+          }
+          const errorResponse = createErr as ApiError;
+          setError(errorResponse.response?.data?.msg || 'Failed to create itinerary');
+          setAdding(false);
+          return;
+        }
+      }
+
+      // Prepare payload
       const flights = pendingItems.filter(item => item.type === 'flight').map(item => item.data);
       const items = pendingItems.filter(item => item.type !== 'flight').map(item => ({
         name: item.data.name || item.data.title,
@@ -246,13 +414,14 @@ export function Search() {
         type: item.type
       }));
 
-      const response = await api.post(`/itineraries/${selectedItineraryId}/save`, {
+      // Save to backend
+      const response = await api.post(`/itineraries/${itineraryId}/save`, {
         flights,
         items
       });
 
       localStorage.setItem('planit_saved_data', JSON.stringify({
-        itinerary_id: selectedItineraryId,
+        itinerary_id: itineraryId,
         ...response.data
       }));
 
@@ -261,7 +430,7 @@ export function Search() {
       localStorage.removeItem('planit_current_itinerary');
       setCurrentItinerary(null);
       setSuccessMessage('All items saved to itinerary!');
-      navigate(`/itineraries/${selectedItineraryId}`);
+      navigate(`/itineraries/${itineraryId}`);
     } catch (err) {
       interface ApiError {
         response?: { data?: { msg?: string } };
@@ -317,7 +486,7 @@ export function Search() {
           <Button
             key={type}
             variant={searchType === type ? 'default' : 'outline'}
-            onClick={() => setSearchType(type)}
+            onClick={() => switchSearchType(type)}
           >
             {type.charAt(0).toUpperCase() + type.slice(1)}
           </Button>
@@ -384,7 +553,7 @@ export function Search() {
           <div className="mt-4 flex gap-2">
             <select
               value={selectedItineraryId || ''}
-              onChange={(e) => setSelectedItineraryId(parseInt(e.target.value))}
+              onChange={(e) => setSelectedItineraryId(e.target.value ? parseInt(e.target.value) : null)}
               className="flex-1 px-3 py-2 border rounded-md"
             >
               <option value="">Select Itinerary</option>
@@ -417,30 +586,100 @@ export function Search() {
       )}
 
       <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
-        {results.map((item, index) => (
-          <Card key={index} className="hover:shadow-lg transition">
-            <CardHeader>
-              <CardTitle className="text-lg">
-                {item.name || item.title || 'Unknown'}
-              </CardTitle>
-            </CardHeader>
-            <CardContent>
-              {item.description && (
-                <p className="text-sm text-gray-600 mb-2">{item.description.substring(0, 100)}...</p>
-              )}
-              {item.price && <p className="text-lg font-bold mb-2">${item.price}</p>}
-              {item.price_per_night && <p className="text-lg font-bold mb-2">${item.price_per_night}/night</p>}
-              {item.rating && <p className="text-sm mb-4">Rating: {item.rating}</p>}
-              <Button
-                onClick={() => openAddModal(item)}
-                className="w-full"
-                size="sm"
-              >
-                Add to Itinerary
-              </Button>
-            </CardContent>
-          </Card>
-        ))}
+        {results.map((item, index) => {
+          if (searchType === 'hotels') {
+            // Render hotel card
+            const hotelId = (item as any).hotel_id || (item as any).hotel_key || (item as any).id || '';
+            return (
+              <Card key={index} className={`hover:shadow-lg transition`}>
+                <div>
+                  <CardHeader>
+                    <CardTitle className="text-lg">{item.name || item.title || 'Unknown Hotel'}</CardTitle>
+                  </CardHeader>
+                  <CardContent>
+                    { (item as any).image && (
+                      <img src={(item as any).image} alt={item.name} className={`w-full object-cover rounded mb-2 h-36`} />
+                    ) }
+                    {item.price_per_night && <p className="text-green-600 font-bold mb-1">${item.price_per_night} / night</p>}
+                    {item.rating && <p className="text-sm mb-1">Rating: {item.rating}</p>}
+                    { (item as any).address && <p className="text-sm text-gray-600 mb-2">{(item as any).address}</p> }
+                    <div className="flex gap-2">
+                      <Button onClick={() => openAddModal(item)} className="flex-1">Add to Itinerary</Button>
+                    </div>
+                  </CardContent>
+                </div>
+              </Card>
+            );
+          }
+
+          // Default: attractions rendering (existing behavior)
+          const xid = (item as any).xid || (item as any).id || '';
+          const isExpanded = expandedXid === xid;
+          const details = xid ? attractionDetails[xid] : null;
+          const activities = xid ? activitiesMap[xid] : [];
+
+          return (
+            <Card key={index} className={`hover:shadow-lg transition ${isExpanded ? 'ring-2 ring-indigo-300' : ''}`}>
+              <div onClick={async () => {
+                // toggle expansion; if expanding, fetch details
+                if (isExpanded) {
+                  setExpandedXid(null);
+                } else {
+                  setExpandedXid(xid);
+                  if (xid) await fetchAttractionDetails(xid, (item as any).lat, (item as any).lon);
+                }
+              }} style={{ cursor: xid ? 'pointer' : 'default' }}>
+                <CardHeader>
+                  <CardTitle className="text-lg">{item.name || item.title || 'Unknown'}</CardTitle>
+                </CardHeader>
+                <CardContent>
+                  { (item as any).image_url && (
+                    <img src={(item as any).image_url} alt={item.name} className={`w-full object-cover rounded mb-2 ${isExpanded ? 'h-64' : 'h-36'}`} />
+                  ) }
+
+                  {isExpanded ? (
+                    <>
+                      <p className="text-sm text-gray-700 mb-2">{(details && details.description) || item.description || 'No description available.'}</p>
+                      {activities && activities.length > 0 && (
+                        <div className="mb-2">
+                          <h4 className="font-semibold">Nearby tours & ticketed activities</h4>
+                          <div className="space-y-2 mt-2">
+                            {activities.map((a, i) => (
+                              <div key={i} className="p-2 bg-white border rounded flex justify-between items-center">
+                                <div>
+                                  <div className="font-medium">{a.name}</div>
+                                  {a.description && <div className="text-sm text-gray-600">{a.description.substring(0,100)}...</div>}
+                                  {a.price ? <div className="text-sm text-green-600">{a.currency || 'USD'} ${a.price}</div> : null}
+                                </div>
+                                <div className="flex flex-col gap-2">
+                                  {a.bookingLink && (
+                                    <a className="text-sm text-blue-600 underline" href={a.bookingLink} target="_blank" rel="noreferrer">Book</a>
+                                  )}
+                                  <Button size="sm" onClick={() => { openAddModal({ name: a.name, title: a.name, description: a.description, price: a.price }); }}>Add</Button>
+                                </div>
+                              </div>
+                            ))}
+                          </div>
+                        </div>
+                      )}
+
+                      <div className="flex gap-2 mt-3">
+                        <Button onClick={() => openAddModal({ xid, name: item.name, title: item.name, description: details?.description || item.description, price: item.rate })} className="flex-1">Add to Itinerary</Button>
+                        <Button variant="outline" onClick={() => { setExpandedXid(null); }}>Close</Button>
+                      </div>
+                    </>
+                  ) : (
+                    <>
+                      {item.description && (<p className="text-sm text-gray-600 mb-2">{item.description.substring(0, 100)}...</p>)}
+                      {item.rate && <p className="text-sm mb-2">Popularity: {item.rate}</p>}
+                      <Button onClick={() => openAddModal(item)} className="w-full" size="sm">Add to Itinerary</Button>
+                    </>
+                  )}
+                </CardContent>
+              </div>
+            </Card>
+          );
+        })}
       </div>
 
       {results.length === 0 && !loading && query && (
