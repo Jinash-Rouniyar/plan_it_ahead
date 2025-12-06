@@ -285,10 +285,13 @@ export function CreateItinerary() {
   };
 
   return (
-    <div className="container mx-auto px-4 py-8 max-w-4xl">
-      <h1 className="text-3xl font-bold mb-6">Create New Itinerary</h1>
+    <div className="min-h-screen bg-gradient-to-br from-blue-50 via-indigo-50 to-purple-50 py-8 px-4">
+      <div className="container mx-auto max-w-4xl">
+        <h1 className="text-4xl font-bold mb-8 bg-gradient-to-r from-indigo-600 to-purple-600 bg-clip-text text-transparent">
+          Create New Itinerary
+        </h1>
 
-      <Card className="mb-6">
+        <Card className="mb-6 bg-white/90 backdrop-blur-sm border-0 shadow-lg">
         <CardHeader>
           <CardTitle>Flight Selection</CardTitle>
           <CardDescription>Select your departure and return flights</CardDescription>
@@ -410,16 +413,24 @@ export function CreateItinerary() {
             />
           </div>
 
-          {error && <p className="text-red-500 text-sm">{error}</p>}
+          {error && (
+            <div className="bg-red-50 border border-red-200 text-red-700 px-4 py-3 rounded-lg text-sm">
+              {error}
+            </div>
+          )}
 
-          <Button onClick={searchFlights} disabled={loading} className="w-full">
+          <Button 
+            onClick={searchFlights} 
+            disabled={loading} 
+            className="w-full bg-gradient-to-r from-indigo-600 to-purple-600 hover:from-indigo-700 hover:to-purple-700 text-white shadow-lg hover:shadow-xl transition-all duration-300"
+          >
             {loading ? 'Searching...' : 'Search Flights'}
           </Button>
         </CardContent>
       </Card>
 
       {outboundFlights.length > 0 && (
-        <Card className="mb-6">
+        <Card className="mb-6 bg-white/90 backdrop-blur-sm border-0 shadow-lg">
           <CardHeader>
             <CardTitle>Outbound Flights</CardTitle>
             <CardDescription>Select your departure flight</CardDescription>
@@ -463,7 +474,7 @@ export function CreateItinerary() {
       )}
 
       {returnFlights.length > 0 && (
-        <Card className="mb-6">
+        <Card className="mb-6 bg-white/90 backdrop-blur-sm border-0 shadow-lg">
           <CardHeader>
             <CardTitle>Return Flights</CardTitle>
             <CardDescription>Select your return flight</CardDescription>
@@ -510,12 +521,13 @@ export function CreateItinerary() {
         <Button
           onClick={createItinerary}
           disabled={loading || !returnDate}
-          className="w-full"
+          className="w-full bg-gradient-to-r from-indigo-600 to-purple-600 hover:from-indigo-700 hover:to-purple-700 text-white shadow-lg hover:shadow-xl transition-all duration-300"
           size="lg"
         >
           {loading ? 'Creating...' : 'Create Itinerary'}
         </Button>
       )}
+      </div>
     </div>
   );
 }

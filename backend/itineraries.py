@@ -91,19 +91,31 @@ def create_itinerary():
     data = request.get_json() or {}
     activity_start_time = _parse_datetime(data.get('activity_start_time'))
     total_cost = data.get('total_cost')
+    title = data.get('title', '').strip() if data.get('title') else None
 
     Itinerary = get_class('itinerary')
     session = get_session()
     try:
-        it = Itinerary(user_id=user_id, activity_start_time=activity_start_time, total_cost=total_cost)
+        itinerary_kwargs = {'user_id': user_id}
+        if activity_start_time is not None:
+            itinerary_kwargs['activity_start_time'] = activity_start_time
+        if total_cost is not None:
+            itinerary_kwargs['total_cost'] = total_cost
+        if title:
+            itinerary_kwargs['title'] = title
+        
+        it = Itinerary(**itinerary_kwargs)
         session.add(it)
         session.commit()
-        return jsonify({
+        
+        result = {
             'itinerary_id': it.itinerary_id,
             'user_id': it.user_id,
             'activity_start_time': str(it.activity_start_time) if it.activity_start_time else None,
-            'total_cost': float(it.total_cost) if it.total_cost is not None else None
-        }), 201
+            'total_cost': float(it.total_cost) if it.total_cost is not None else None,
+            'title': getattr(it, 'title', None)
+        }
+        return jsonify(result), 201
     except Exception as e:
         session.rollback()
         return jsonify({'msg': str(e)}), 400
@@ -146,20 +158,19 @@ def create_itinerary_from_flights():
     Itinerary = get_class('itinerary')
     session = get_session()
     try:
-        # Check if table has start_date and end_date columns
-        if hasattr(Itinerary, 'start_date') and hasattr(Itinerary, 'end_date'):
-            it = Itinerary(
-                user_id=user_id,
-                title=title,
-                start_date=departure_date,
-                end_date=return_date
-            )
-        elif hasattr(Itinerary, 'title'):
-            # Fallback: use title if available
-            it = Itinerary(user_id=user_id, title=title)
-        else:
-            # Basic fallback
-            it = Itinerary(user_id=user_id)
+        # Build itinerary kwargs based on which columns exist in the database
+        itinerary_kwargs = {'user_id': user_id}
+        
+        if hasattr(Itinerary, 'title'):
+            itinerary_kwargs['title'] = title
+        
+        if hasattr(Itinerary, 'start_date'):
+            itinerary_kwargs['start_date'] = departure_date
+        
+        if hasattr(Itinerary, 'end_date'):
+            itinerary_kwargs['end_date'] = return_date
+        
+        it = Itinerary(**itinerary_kwargs)
         
         session.add(it)
         session.commit()
@@ -168,11 +179,14 @@ def create_itinerary_from_flights():
         itinerary_id = getattr(it, 'itinerary_id', None) or getattr(it, 'id', None)
 
         num_days = (return_date - departure_date).days
+        
+        # Return title from database
+        saved_title = getattr(it, 'title', None)
 
         return jsonify({
             'itinerary_id': itinerary_id,
             'user_id': user_id,
-            'title': title,
+            'title': saved_title,
             'start_date': departure_date.isoformat(),
             'end_date': return_date.isoformat(),
             'num_days': num_days

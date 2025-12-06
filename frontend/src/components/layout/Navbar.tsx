@@ -17,9 +17,9 @@ export function Navbar() {
   };
 
   return (
-    <nav className="border-b bg-white">
+    <nav className="border-b border-indigo-100 bg-gradient-to-r from-blue-50 via-indigo-50 to-purple-50 shadow-sm">
       <div className="container mx-auto px-4 py-3 flex items-center justify-between">
-        <Link to="/" className="text-2xl font-bold bg-gradient-to-r from-blue-600 to-purple-600 bg-clip-text text-transparent">
+        <Link to="/" className="text-2xl font-bold bg-gradient-to-r from-indigo-600 to-purple-600 bg-clip-text text-transparent">
           Plan It Ahead
         </Link>
         
@@ -30,8 +30,8 @@ export function Navbar() {
                 to="/itineraries" 
                 className={`text-sm font-medium transition-colors ${
                   isActive('/itineraries') 
-                    ? 'text-blue-600' 
-                    : 'text-gray-700 hover:text-blue-600'
+                    ? 'text-indigo-600' 
+                    : 'text-gray-700 hover:text-indigo-600'
                 }`}
               >
                 My Itineraries
@@ -40,8 +40,8 @@ export function Navbar() {
                 to="/ai" 
                 className={`text-sm font-medium transition-colors ${
                   isActive('/ai') 
-                    ? 'text-blue-600' 
-                    : 'text-gray-700 hover:text-blue-600'
+                    ? 'text-indigo-600' 
+                    : 'text-gray-700 hover:text-indigo-600'
                 }`}
               >
                 AI Planner
@@ -50,8 +50,8 @@ export function Navbar() {
                 to="/companions" 
                 className={`text-sm font-medium transition-colors ${
                   isActive('/companions') 
-                    ? 'text-blue-600' 
-                    : 'text-gray-700 hover:text-blue-600'
+                    ? 'text-indigo-600' 
+                    : 'text-gray-700 hover:text-indigo-600'
                 }`}
               >
                 Companions
@@ -60,24 +60,24 @@ export function Navbar() {
                 to="/chat" 
                 className={`text-sm font-medium transition-colors ${
                   isActive('/chat') 
-                    ? 'text-blue-600' 
-                    : 'text-gray-700 hover:text-blue-600'
+                    ? 'text-indigo-600' 
+                    : 'text-gray-700 hover:text-indigo-600'
                 }`}
               >
                 Chat
               </Link>
-              <span className="text-sm text-gray-600">{user.name}</span>
-              <Button variant="outline" size="sm" onClick={handleLogout} className="border-blue-600 text-blue-600 hover:bg-blue-50">
+              <span className="text-sm text-indigo-600 font-medium">{user.name}</span>
+              <Button variant="outline" size="sm" onClick={handleLogout} className="border-indigo-200 text-indigo-600 hover:bg-indigo-50">
                 Logout
               </Button>
             </>
           ) : (
             <>
               <Link to="/login">
-                <Button variant="ghost" size="sm">Login</Button>
+                <Button variant="ghost" size="sm" className="text-gray-700 hover:text-indigo-600 hover:bg-indigo-50">Login</Button>
               </Link>
               <Link to="/register">
-                <Button size="sm">Sign Up</Button>
+                <Button size="sm" className="bg-gradient-to-r from-indigo-600 to-purple-600 hover:from-indigo-700 hover:to-purple-700 text-white">Sign Up</Button>
               </Link>
             </>
           )}
