@@ -1,7 +1,10 @@
 from flask import Blueprint, request, jsonify
 from flask_jwt_extended import jwt_required, get_jwt_identity
 from services.opentripmap import search_pois, get_poi_details, get_nearby_pois
+from services.image_search import search_image
+from services.serpapi_tripadvisor import search_tripadvisor, SERPAPI_API_KEY as SERP_TRIP_API_KEY
 from services.xotelo import search_hotels, get_hotel_details, get_pricing, get_hotel_heatmap
+from services.serpapi_tripadvisor import search_tripadvisor_hotels, SERPAPI_API_KEY as SERP_TRIP_API_KEY
 from services.serpapi_flights import search_flights, get_flight_details
 from services.airport_search import search_airports
 from services.amadeus import (
@@ -140,6 +143,85 @@ def get_attraction_details(xid):
         return jsonify({'msg': 'Error fetching attraction details', 'error': str(e)}), 500
 
 
+@bp.route('/attractions-serp', methods=['GET'])
+@jwt_required(optional=True)
+def search_attractions_serp():
+    """Search attractions and enrich with SerpAPI images when available"""
+    location = request.args.get('location', '').strip()
+    radius = request.args.get('radius', 5000, type=int)
+    limit = request.args.get('limit', 20, type=int)
+    lat = request.args.get('lat', type=float)
+    lon = request.args.get('lon', type=float)
+
+    try:
+        formatted = []
+
+        # Prefer SerpAPI TripAdvisor search when API key available
+        if SERP_TRIP_API_KEY:
+            try:
+                serp_results = search_tripadvisor(location or query, location, limit)
+                if serp_results:
+                    for r in serp_results:
+                        formatted.append({
+                            'xid': None,
+                            'name': r.get('name'),
+                            'type': r.get('type'),
+                            'description': (r.get('description') or '')[:300],
+                            'lat': r.get('lat'),
+                            'lon': r.get('lon'),
+                            'image_url': r.get('image_url'),
+                            'rate': r.get('rate') or 0,
+                            'distance': 0
+                        })
+                    return jsonify({'attractions': formatted, 'count': len(formatted)}), 200
+            except Exception:
+                # fallback to OpenTripMap below
+                formatted = []
+
+        # Fallback: use OpenTripMap POIs and optionally enrich images via SerpAPI image search
+        if lat and lon:
+            pois = get_nearby_pois(lat, lon, radius, None, limit)
+        elif location:
+            pois = search_pois(location, None, radius, limit)
+        else:
+            return jsonify({'msg': 'location or lat/lon required'}), 400
+
+        for poi in pois:
+            if isinstance(poi, dict):
+                props = poi.get('properties', {})
+                geom = poi.get('geometry', {})
+                coords = geom.get('coordinates', [])
+                name = props.get('name', 'Unknown')
+                desc = props.get('wikipedia_extracts', {}).get('text', '') if props.get('wikipedia_extracts') else ''
+                image_url = props.get('preview', {}).get('source') if props.get('preview') else None
+
+                # If no preview image, try SerpAPI image search
+                if not image_url:
+                    try:
+                        img = search_image(name, location)
+                        if img:
+                            image_url = img
+                    except Exception:
+                        image_url = None
+
+                formatted.append({
+                    'xid': props.get('xid'),
+                    'name': name,
+                    'type': props.get('kinds', '').split(',')[0] if props.get('kinds') else '',
+                    'description': (desc or '')[:300],
+                    'lat': coords[1] if len(coords) > 1 else None,
+                    'lon': coords[0] if len(coords) > 0 else None,
+                    'image_url': image_url,
+                    'rate': props.get('rate', 0),
+                    'distance': props.get('dist', 0)
+                })
+
+        return jsonify({'attractions': formatted, 'count': len(formatted)}), 200
+    except Exception as e:
+        print(f"Error searching attractions with Serp enrichment: {e}")
+        return jsonify({'msg': 'Error searching attractions', 'error': str(e)}), 500
+
+
 @bp.route('/hotels', methods=['GET'])
 @jwt_required(optional=True)
 def search_hotels_endpoint():
@@ -157,20 +239,29 @@ def search_hotels_endpoint():
         return jsonify({'msg': 'check_in and check_out parameters required'}), 400
     
     try:
+        # Prefer SerpAPI TripAdvisor results when available
+        if SERP_TRIP_API_KEY:
+            try:
+                serp_hotels = search_tripadvisor_hotels(location, location, limit)
+                if serp_hotels:
+                    return jsonify({'hotels': serp_hotels, 'count': len(serp_hotels)}), 200
+            except Exception:
+                pass
+
         hotels = search_hotels(location, check_in, check_out, guests, min_price, max_price, limit)
-        
+
         if not hotels:
             return jsonify({
                 'hotels': [],
                 'count': 0,
                 'msg': 'No hotels found. Try adjusting your search criteria.'
             }), 200
-        
+
         return jsonify({
             'hotels': hotels,
             'count': len(hotels)
         }), 200
-    
+
     except Exception as e:
         print(f"Error searching hotels: {e}")
         return jsonify({'msg': 'Error searching hotels', 'error': str(e)}), 500
