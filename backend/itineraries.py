@@ -625,7 +625,7 @@ def add_flight_to_itinerary(itinerary_id):
             
             # Extract flight data with placeholder values for missing fields
             flight_data = {
-                'flight_num': data.get('flight_number', data.get('flight_id', 'N/A'))[:20] if data.get('flight_number', data.get('flight_id')) else 'N/A',
+                'flight_num': data.get('flight_number', data.get('flight_id', 'N/A')) if data.get('flight_number', data.get('flight_id')) else 'N/A',
                 'airline': data.get('airline', 'Unknown')[:50] if data.get('airline') else 'Unknown',
                 'departure_time': data.get('departure_date', data.get('departure_time')),
                 'arrival_time': data.get('arrival_date', data.get('arrival_time')),
@@ -706,7 +706,7 @@ def save_itinerary(itinerary_id):
             incoming_nums = []
             computed_records = []
             for flight_data in flights:
-                fnum = str(flight_data.get('flight_number', flight_data.get('flight_id', 'N/A')))[:50]
+                fnum = str(flight_data.get('flight_number', flight_data.get('flight_id', 'N/A')))
                 incoming_nums.append(fnum)
                 computed_records.append((fnum, flight_data))
 
@@ -727,7 +727,7 @@ def save_itinerary(itinerary_id):
                 breakdown['flights'] += price
 
                 flight_record = {
-                    'flight_num': fnum[:50],
+                    'flight_num': fnum,
                     'airline': str(flight_data.get('airline', 'Unknown'))[:50],
                     'departure_time': flight_data.get('departure_date', flight_data.get('departure_time')),
                     'arrival_time': flight_data.get('arrival_date', flight_data.get('arrival_time')),

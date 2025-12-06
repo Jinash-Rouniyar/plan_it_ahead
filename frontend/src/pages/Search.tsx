@@ -94,7 +94,10 @@ export function Search() {
       setSelectedItineraryId(itinerary.itinerary_id);
       
       if (itinerary.destination) {
-        setQuery(itinerary.destination);
+        // Avoid auto-filling airport IATA codes (e.g., JFK) into the attractions search box
+        const dest = (itinerary.destination || '').toString().trim();
+        const isIata = /^[A-Z]{3}$/i.test(dest);
+        if (!isIata) setQuery(dest);
       }
       if (itinerary.departure_date) {
         setCheckIn(itinerary.departure_date);
@@ -105,23 +108,63 @@ export function Search() {
     }
     // If we open the page with attractions selected, trigger a search
     if (searchType === 'attractions') {
-      const q = storedItinerary?.destination || query;
-      if (q) {
-        setQuery(q);
+      const dest = storedItinerary?.destination || query;
+      // only auto-fill attractions when dest is not a 3-letter IATA code
+      const isIata = dest ? (/^[A-Z]{3}$/i.test(dest.toString().trim())) : false;
+      if (dest && !isIata) {
+        setQuery(dest);
         // small delay to allow state to settle
         setTimeout(() => handleSearch(), 0);
       }
     }
+    // If the page opens with hotels selected, auto-fill and search using the itinerary destination
+    if (searchType === 'hotels') {
+      const hotelDest = storedItinerary?.destination || query;
+      if (hotelDest && storedItinerary?.departure_date && storedItinerary?.return_date) {
+        setQuery(hotelDest);
+        setCheckIn(storedItinerary.departure_date);
+        setCheckOut(storedItinerary.return_date);
+        setTimeout(() => handleSearch('hotels'), 0);
+      }
+    }
   }, []);
+
+  // compute a sensible default itinerary title:
+  // - If current itinerary has a title, use it
+  // - Otherwise if we have a location (currentItinerary.destination or query),
+  //   return "Trip to <Location> <N>" where N is 1 + number of existing itineraries for that location
+  // - Fallback to "Itinerary N"
+  const defaultItineraryTitle = () => {
+    if (currentItinerary && currentItinerary.title) return currentItinerary.title;
+
+    const loc = (currentItinerary?.destination || query || '').toString().trim();
+    if (loc) {
+      const locKey = loc.toLowerCase();
+      const sameForLocation = (itineraries || []).filter((it) => {
+        const title = (it.title || '').toLowerCase();
+        return title.includes(locKey) || (it.destination || '').toString().toLowerCase() === locKey;
+      });
+      const base = `Trip to ${loc}`;
+      return `${base} ${sameForLocation.length + 1}`;
+    }
+
+    const count = (itineraries && itineraries.length) ? itineraries.length : 0;
+    return `Itinerary ${count + 1}`;
+  };
 
   useEffect(() => {
     // When user switches to attractions, auto-search using currentItinerary.destination if available
     if (searchType === 'attractions') {
-      const locationQuery = currentItinerary?.destination || query;
-      if (locationQuery) {
+      const locationQuery = (currentItinerary?.destination || query || '').toString().trim();
+      const isIata = /^[A-Z]{3}$/i.test(locationQuery);
+      // Only auto-fill and search for attractions when we have a non-IATA location
+      if (locationQuery && !isIata) {
         setQuery(locationQuery);
-        handleSearch();
+      } else {
+        // clear query so the placeholder shows instead of an airport code
+        setQuery('');
       }
+      // Do not call handleSearch here; switchSearchType triggers searches to avoid duplicate calls
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [searchType]);
@@ -138,7 +181,10 @@ export function Search() {
     // Auto-search when switching to attractions or when hotels have dates
     setTimeout(() => {
       if (type === 'attractions') {
-        const q = currentItinerary?.destination || query;
+        // Prefer a city/location name over an airport code when auto-searching
+        const dest = (currentItinerary?.destination || '').toString().trim();
+        const isIata = /^[A-Z]{3}$/i.test(dest);
+        const q = (!isIata && dest) ? dest : query;
         if (q) handleSearch('attractions');
       } else if (type === 'hotels') {
         if (checkIn && checkOut && query) handleSearch('hotels');
@@ -152,6 +198,44 @@ export function Search() {
     return !!(item.hotel_id || item.hotel_key || item.price_per_night || item.rating || item.address);
   };
 
+  // Compute number of nights from two dates (minimum 1). If dates not provided, fall back to component state.
+  const computeNights = (ci?: string, co?: string) => {
+    const start = ci ?? checkIn;
+    const end = co ?? checkOut;
+    if (!start || !end) return 1;
+    try {
+      const inDate = new Date(start);
+      const outDate = new Date(end);
+      const diff = Math.round((outDate.getTime() - inDate.getTime()) / (1000 * 60 * 60 * 24));
+      return diff > 0 ? diff : 1;
+    } catch (e) {
+      return 1;
+    }
+  };
+
+  // Fallback price range when provider price is unavailable
+  const FALLBACK_LOW = 100;
+  const FALLBACK_HIGH = 400;
+
+  const formatCurrency = (n: number) => `$${Math.round(n)}`;
+  
+  // Deterministic fallback price per hotel based on a hash of the hotel key/name
+  const getFallbackPriceForItem = (item: any) => {
+    const key = (item && (item.hotel_key || item.hotel_id || item.id || item.name || item.title)) || '';
+    let str = String(key);
+    if (!str) str = JSON.stringify(item || '');
+    // djb2 hash
+    let h = 5381;
+    for (let i = 0; i < str.length; i++) {
+      h = ((h << 5) + h) + str.charCodeAt(i);
+      h = h & h; // keep in 32-bit range
+    }
+    const range = FALLBACK_HIGH - FALLBACK_LOW + 1;
+    const val = Math.abs(h) % range;
+    return FALLBACK_LOW + val;
+  };
+  
+
   // Normalize attraction fields (ensure image_url exists)
   const normalizeAttraction = (item: any) => {
     if (!item) return item;
@@ -159,6 +243,12 @@ export function Search() {
     normalized.image_url = item.image_url || item.image || item.thumbnail || item.photo || null;
     // keep xid/id mapping consistent
     normalized.xid = item.xid || item.id || item.xid;
+    // map to AI recommendation fields for consistent rendering
+    normalized.name = normalized.name || normalized.title || '';
+    normalized.reasoning = normalized.reasoning || normalized.description || '';
+    normalized.best_time = normalized.best_time || normalized.best_visit_time || undefined;
+    normalized.duration_minutes = normalized.duration_minutes || normalized.duration || undefined;
+    normalized.estimated_cost = normalized.estimated_cost || normalized.price || normalized.estimated_cost || undefined;
     return normalized;
   };
 
@@ -192,8 +282,8 @@ export function Search() {
     try {
       let response;
       if (activeType === 'attractions') {
-        // search attractions by location (city) and also clear any expanded state
-        response = await api.get('/search/attractions', { params: { location: query } });
+        // search attractions by location (city) using Serp-enriched endpoint
+        response = await api.get('/search/attractions-serp', { params: { location: query } });
         // Debugging: log response for diagnosis if server returns unexpected shape
         // eslint-disable-next-line no-console
         console.debug('search/attractions response:', response.data);
@@ -220,18 +310,26 @@ export function Search() {
           setError('No attractions found (server returned unexpected data).');
         }
       } else if (activeType === 'hotels') {
-        if (!checkIn || !checkOut) {
-          setError('Check-in and check-out dates are required');
+        // Use explicit checkIn/checkOut if provided, otherwise fall back to currentItinerary dates
+        const ci = checkIn || currentItinerary?.departure_date;
+        const co = checkOut || currentItinerary?.return_date;
+        if (!ci || !co) {
+          setError('Check-in and check-out dates are required (use itinerary dates or enter dates)');
           setLoading(false);
           return;
         }
-        
-        response = await api.get('/search/hotels', { 
-          params: { 
+
+        // Persist derived dates into state so UI shows them
+        if (!checkIn && ci) setCheckIn(ci);
+        if (!checkOut && co) setCheckOut(co);
+
+        // Prefer Serp TripAdvisor-backed hotels endpoint
+        response = await api.get('/search/hotels', {
+          params: {
             location: query,
-            check_in: checkIn,
-            check_out: checkOut
-          } 
+            check_in: ci,
+            check_out: co
+          }
         });
         // Debugging: log hotel response
         // eslint-disable-next-line no-console
@@ -250,6 +348,8 @@ export function Search() {
       setLoading(false);
     }
   };
+
+  
 
   const fetchAttractionDetails = async (xid: string, lat?: number, lon?: number) => {
     if (!xid) return;
@@ -276,10 +376,14 @@ export function Search() {
     setSelectedItem(item);
     setShowAddModal(true);
     setError('');
-    if (itineraries.length > 0) {
-      const firstItinerary = itineraries[0];
-      setSelectedItineraryId(firstItinerary.itinerary_id || firstItinerary.id || null);
+    // Prefer the current itinerary if present; otherwise leave selection empty so
+    // the placeholder shows the suggested default title (e.g., "Itinerary 4")
+    if (currentItinerary) {
+      setSelectedItineraryId(currentItinerary.itinerary_id || currentItinerary.id || null);
+    } else {
+      setSelectedItineraryId(null);
     }
+    // No star-tier selection: modal will show provider price or a single fallback estimate
   };
 
   const closeModal = () => {
@@ -322,7 +426,15 @@ export function Search() {
     try {
       const itemType = searchType === 'attractions' ? 'attraction' : 'hotel';
       const itemName = selectedItem.name || selectedItem.title || 'Unknown';
-      const estimatedCost = selectedItem.price || selectedItem.price_per_night || 0;
+      // Compute estimated cost according to user's selected price option for hotels
+      let estimatedCost = selectedItem.price || selectedItem.price_per_night || 0;
+      if (itemType === 'hotel') {
+        // compute nights using the dates (prefer state, but computeNights will fallback to itinerary dates)
+        const nights = computeNights();
+        // Use provider's per-night price when available, otherwise use deterministic fallback per-hotel
+        const perNight = selectedItem.price_per_night || selectedItem.price || getFallbackPriceForItem(selectedItem);
+        estimatedCost = Number(perNight || 0) * nights;
+      }
 
       await api.post(`/itineraries/${selectedItineraryId}/items`, {
         item_type: itemType,
@@ -359,7 +471,7 @@ export function Search() {
       // Ensure we have an itinerary to save into. If none selected, try to create one.
       let itineraryId = selectedItineraryId as number | null;
 
-      if (!itineraryId) {
+          if (!itineraryId) {
         // Try to use the stored current itinerary
         const stored = localStorage.getItem('planit_current_itinerary');
         const storedItinerary = stored ? JSON.parse(stored) : null;
@@ -368,14 +480,14 @@ export function Search() {
           let createResp: any = null;
           if (storedItinerary && storedItinerary.departure_date && storedItinerary.return_date) {
             // create using dates and optional title (uses create-from-flights endpoint)
-            createResp = await api.post('/itineraries/create-from-flights', {
-              departure_date: storedItinerary.departure_date,
-              return_date: storedItinerary.return_date,
-              title: storedItinerary.title || undefined
-            });
+                createResp = await api.post('/itineraries/create-from-flights', {
+                  departure_date: storedItinerary.departure_date,
+                  return_date: storedItinerary.return_date,
+                  title: storedItinerary.title || defaultItineraryTitle()
+                });
           } else {
             // Fallback: create an empty itinerary
-            createResp = await api.post('/itineraries', {});
+                createResp = await api.post('/itineraries', { title: defaultItineraryTitle() });
           }
 
           itineraryId = createResp.data.itinerary_id;
@@ -500,12 +612,13 @@ export function Search() {
             value={query}
             onChange={(e) => setQuery(e.target.value)}
             placeholder={searchType === 'hotels' ? 'Search location for hotels...' : 'Search for attractions...'}
-            onKeyPress={(e) => e.key === 'Enter' && handleSearch()}
+            onKeyDown={(e) => e.key === 'Enter' && handleSearch()}
             className="flex-1"
           />
-          <Button onClick={handleSearch} disabled={loading}>
+          <Button onClick={() => handleSearch()} disabled={loading} className="transition hover:bg-blue-200 hover:text-white">
             {loading ? 'Searching...' : 'Search'}
           </Button>
+          
         </div>
         
         {searchType === 'hotels' && (
@@ -556,7 +669,7 @@ export function Search() {
               onChange={(e) => setSelectedItineraryId(e.target.value ? parseInt(e.target.value) : null)}
               className="flex-1 px-3 py-2 border rounded-md"
             >
-              <option value="">Select Itinerary</option>
+              <option value="">{defaultItineraryTitle()}</option>
               {itineraries.map((it) => (
                 <option key={it.itinerary_id || it.id} value={it.itinerary_id || it.id}>
                   {it.title || `Itinerary ${it.itinerary_id || it.id}`}
@@ -590,6 +703,17 @@ export function Search() {
           if (searchType === 'hotels') {
             // Render hotel card
             const hotelId = (item as any).hotel_id || (item as any).hotel_key || (item as any).id || '';
+            const nights = computeNights();
+            const pricePerNight = (item as any).price_per_night || (item as any).price || null;
+            let totalCost: number | null = null;
+            let fallbackPerNight: number | null = null;
+            if (pricePerNight) {
+              totalCost = Number(pricePerNight) * nights;
+            } else {
+              fallbackPerNight = getFallbackPriceForItem(item);
+              totalCost = fallbackPerNight * nights;
+            }
+            
             return (
               <Card key={index} className={`hover:shadow-lg transition`}>
                 <div>
@@ -600,9 +724,15 @@ export function Search() {
                     { (item as any).image && (
                       <img src={(item as any).image} alt={item.name} className={`w-full object-cover rounded mb-2 h-36`} />
                     ) }
-                    {item.price_per_night && <p className="text-green-600 font-bold mb-1">${item.price_per_night} / night</p>}
+                    {pricePerNight ? (
+                      <p className="text-green-600 font-bold mb-1">Price per night: {formatCurrency(Number(pricePerNight))}</p>
+                    ) : (
+                      <p className="text-sm text-gray-700 mb-1">Price per night: {formatCurrency(fallbackPerNight || 0)}</p>
+                    )}
+                    <p className="text-sm text-gray-700 mb-1">Total for {nights} night{nights > 1 ? 's' : ''}: <span className="font-semibold">{formatCurrency(totalCost || 0)}</span></p>
                     {item.rating && <p className="text-sm mb-1">Rating: {item.rating}</p>}
                     { (item as any).address && <p className="text-sm text-gray-600 mb-2">{(item as any).address}</p> }
+                    
                     <div className="flex gap-2">
                       <Button onClick={() => openAddModal(item)} className="flex-1">Add to Itinerary</Button>
                     </div>
@@ -612,72 +742,81 @@ export function Search() {
             );
           }
 
-          // Default: attractions rendering (existing behavior)
+          // Render attractions in the same card style as AI recommendations
           const xid = (item as any).xid || (item as any).id || '';
-          const isExpanded = expandedXid === xid;
-          const details = xid ? attractionDetails[xid] : null;
-          const activities = xid ? activitiesMap[xid] : [];
-
           return (
-            <Card key={index} className={`hover:shadow-lg transition ${isExpanded ? 'ring-2 ring-indigo-300' : ''}`}>
-              <div onClick={async () => {
-                // toggle expansion; if expanding, fetch details
-                if (isExpanded) {
-                  setExpandedXid(null);
-                } else {
-                  setExpandedXid(xid);
-                  if (xid) await fetchAttractionDetails(xid, (item as any).lat, (item as any).lon);
-                }
-              }} style={{ cursor: xid ? 'pointer' : 'default' }}>
-                <CardHeader>
-                  <CardTitle className="text-lg">{item.name || item.title || 'Unknown'}</CardTitle>
-                </CardHeader>
-                <CardContent>
-                  { (item as any).image_url && (
-                    <img src={(item as any).image_url} alt={item.name} className={`w-full object-cover rounded mb-2 ${isExpanded ? 'h-64' : 'h-36'}`} />
-                  ) }
-
-                  {isExpanded ? (
-                    <>
-                      <p className="text-sm text-gray-700 mb-2">{(details && details.description) || item.description || 'No description available.'}</p>
-                      {activities && activities.length > 0 && (
-                        <div className="mb-2">
-                          <h4 className="font-semibold">Nearby tours & ticketed activities</h4>
-                          <div className="space-y-2 mt-2">
-                            {activities.map((a, i) => (
-                              <div key={i} className="p-2 bg-white border rounded flex justify-between items-center">
-                                <div>
-                                  <div className="font-medium">{a.name}</div>
-                                  {a.description && <div className="text-sm text-gray-600">{a.description.substring(0,100)}...</div>}
-                                  {a.price ? <div className="text-sm text-green-600">{a.currency || 'USD'} ${a.price}</div> : null}
-                                </div>
-                                <div className="flex flex-col gap-2">
-                                  {a.bookingLink && (
-                                    <a className="text-sm text-blue-600 underline" href={a.bookingLink} target="_blank" rel="noreferrer">Book</a>
-                                  )}
-                                  <Button size="sm" onClick={() => { openAddModal({ name: a.name, title: a.name, description: a.description, price: a.price }); }}>Add</Button>
-                                </div>
-                              </div>
-                            ))}
-                          </div>
-                        </div>
-                      )}
-
-                      <div className="flex gap-2 mt-3">
-                        <Button onClick={() => openAddModal({ xid, name: item.name, title: item.name, description: details?.description || item.description, price: item.rate })} className="flex-1">Add to Itinerary</Button>
-                        <Button variant="outline" onClick={() => { setExpandedXid(null); }}>Close</Button>
-                      </div>
-                    </>
-                  ) : (
-                    <>
-                      {item.description && (<p className="text-sm text-gray-600 mb-2">{item.description.substring(0, 100)}...</p>)}
-                      {item.rate && <p className="text-sm mb-2">Popularity: {item.rate}</p>}
-                      <Button onClick={() => openAddModal(item)} className="w-full" size="sm">Add to Itinerary</Button>
-                    </>
+            <div 
+              key={index} 
+              className="border rounded-xl overflow-hidden bg-white shadow-sm hover:shadow-lg transition-all duration-300 hover:scale-[1.02] cursor-pointer group"
+            >
+              { (item as any).image_url && (
+                <div className="relative h-40 overflow-hidden">
+                  <img 
+                    src={(item as any).image_url} 
+                    alt={(item as any).name}
+                    className="w-full h-full object-cover group-hover:scale-110 transition-transform duration-500"
+                    loading="lazy"
+                  />
+                  <div className="absolute inset-0 bg-gradient-to-t from-black/40 to-transparent" />
+                  { (item as any).type && (
+                    <span className="absolute top-2 right-2 text-xs bg-white/90 text-primary px-2 py-1 rounded-full font-medium">
+                      {(item as any).type}
+                    </span>
                   )}
-                </CardContent>
+                </div>
+              )}
+
+              <div className="p-4">
+                <div className="flex items-start justify-between mb-2">
+                  <h3 className="font-semibold text-gray-800 group-hover:text-primary transition-colors">{item.name}</h3>
+                  <div className="flex items-center gap-2">
+                    { (item as any).rate && (
+                      <div className="text-sm text-amber-700 font-semibold">{(item as any).rate}★</div>
+                    )}
+                    { (item as any).reviews && (
+                      <div className="text-xs text-muted-foreground">({(item as any).reviews})</div>
+                    )}
+                    {! (item as any).image_url && (item as any).type && (
+                      <span className="text-xs bg-primary/10 text-primary px-2 py-1 rounded-full">{(item as any).type}</span>
+                    )}
+                  </div>
+                </div>
+                <p className="text-sm text-muted-foreground mb-3 line-clamp-2">{(item as any).description || ''}</p>
+                <div className="flex flex-wrap gap-2 text-xs">
+                  {(item as any).best_time && (
+                    <span className="bg-blue-50 text-blue-700 px-2 py-1 rounded-full flex items-center gap-1">
+                      <span>🕐</span> {(item as any).best_time}
+                    </span>
+                  )}
+                  {(item as any).duration_minutes && (
+                    <span className="bg-purple-50 text-purple-700 px-2 py-1 rounded-full flex items-center gap-1">
+                      <span>⏱️</span> {(item as any).duration_minutes} min
+                    </span>
+                  )}
+                  {(item as any).rate && (
+                    <span className="bg-amber-50 text-amber-700 px-2 py-1 rounded-full flex items-center gap-1">
+                      <span>⭐</span> {(item as any).rate}
+                    </span>
+                  )}
+                </div>
+                {(item as any).lat && (item as any).lon && (
+                  <p className="text-xs text-muted-foreground mt-2 flex items-center gap-1"><span>📍</span> {(item as any).lat.toFixed ? `${(item as any).lat.toFixed(3)}, ${(item as any).lon.toFixed(3)}` : ''}</p>
+                )}
+                <div className="mt-3 flex gap-2">
+                  { (item as any).price && (
+                    <div className="text-green-600 font-bold mr-2">{item.currency ? `${item.currency} ${item.price}` : `$${item.price}`}</div>
+                  )}
+                  <Button onClick={() => openAddModal({ xid, name: item.name, title: item.name, description: item.description, price: item.price || item.rate })} className="flex-1">Add to Itinerary</Button>
+                  { (item as any).link ? (
+                    <a href={(item as any).link} target="_blank" rel="noreferrer" className="inline-block">
+                      <Button variant="outline">View</Button>
+                    </a>
+                  ) : (
+                    <Button variant="outline" onClick={() => { if (xid) { setExpandedXid(xid); fetchAttractionDetails(xid, (item as any).lat, (item as any).lon); } }}>Details</Button>
+                  )}
+                </div>
               </div>
-            </Card>
+            </div>
           );
         })}
       </div>
@@ -715,7 +854,7 @@ export function Search() {
                     onChange={(e) => setSelectedItineraryId(e.target.value ? parseInt(e.target.value) : null)}
                     className="w-full px-3 py-2 border rounded-md mt-1"
                   >
-                    <option value="">-- Add to pending items --</option>
+                    <option value="">{`-- ${defaultItineraryTitle()} --`}</option>
                     {itineraries.map((it) => (
                       <option key={it.itinerary_id || it.id} value={it.itinerary_id || it.id}>
                         {it.title || `Itinerary ${it.itinerary_id || it.id}`}
@@ -728,6 +867,8 @@ export function Search() {
                   No itineraries found. Item will be added to pending items.
                 </p>
               )}
+
+              
 
               {searchType === 'attractions' && selectedItineraryId && (
                 <>
